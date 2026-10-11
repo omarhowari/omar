@@ -153,6 +153,8 @@ class ChatWidget(QWidget):
         super().__init__(parent)
         self.peer_id, self.peer_name, self.my_name = peer_id, peer_name, my_name
         self.is_group = is_group
+        self.is_admin = False
+        self.can_write = self.can_media = True
         self.items: list[dict] = []
         self.online = False
         self.transfer_lookup = lambda tid: None
@@ -260,13 +262,26 @@ class ChatWidget(QWidget):
         self.btn_call.setEnabled(self.online)     # messages and files can wait; calls cannot
         self.input.setPlaceholderText(tr("type_message_short") if self.online else tr("peer_offline_queue"))
 
+    def set_permissions(self, can_write: bool, can_media: bool, reason: str = "", admin: bool = False):
+        changed = admin != self.is_admin
+        self.can_write, self.can_media, self.is_admin = can_write, can_media, admin
+        self.input.setReadOnly(not can_write)
+        self.btn_send.setEnabled(can_write)
+        self.btn_attach.setEnabled(can_media)
+        if not can_write:
+            self.input.clear()
+            self.input.setPlaceholderText(reason)
+        if changed:
+            self.schedule_render()
+
     def set_group(self, name: str, members: int, online: int):
         self.peer_name = name
         self.title.setText("👥 " + name)
         self.online = True
         self.status_lbl.setPixmap(status_icon("available" if online else "offline").pixmap(18, 18))
         self.sub.setText(tr("group_members", n=members, online=online))
-        self.input.setPlaceholderText(tr("type_message_short"))
+        if self.can_write:
+            self.input.setPlaceholderText(tr("type_message_short"))
 
     def load(self, rows: list[dict]):
         self.items = rows
@@ -322,6 +337,13 @@ class ChatWidget(QWidget):
                 label = tr("today") if day == datetime.now().date() else dt.strftime("%Y-%m-%d")
                 parts.append(f'<p align="center" style="color:#6B7280;font-size:8.5pt;margin:10px">— {label} —</p>')
             hhmm = dt.strftime("%H:%M")
+            if it.get("kind") == "deleted":
+                side = mine_side if it.get("outgoing") else theirs_side
+                parts.append(f'<table align="{side}" cellspacing="0" cellpadding="8" style="background:#F1F5F9;'
+                             f'margin:4px 10px;border:1px solid #E5E7EB"><tr><td><span style="color:#64748B;'
+                             f'font-size:9.5pt"><i>{tr("msg_deleted")}</i></span> <span style="color:#9CA3AF;'
+                             f'font-size:8pt">{hhmm}</span></td></tr></table><br clear="all">')
+                continue
             if it.get("kind") == "call":
                 parts.append(self._call_line(it, hhmm))
                 continue
@@ -345,6 +367,9 @@ class ChatWidget(QWidget):
                         f' <span style="color:#DC2626">✗ {tr("not_delivered")}</span>' if st == "failed" else
                         ' <span style="color:#9CA3AF">…</span>')
             multi = f' <span style="color:#7C3AED">[{tr("multi_tag")}]</span>' if it.get("multi") else ""
+            if self.is_group and self.is_admin:
+                multi += (f' &nbsp;<a href="tda:delmsg:{it.get("id", "")}" style="color:#B91C1C;'
+                          f'text-decoration:none">🗑</a>')
             parts.append(
                 f'<table align="{mine_side if mine else theirs_side}" cellspacing="0" cellpadding="9" '
                 f'style="background:{bg};margin:4px 10px;border:1px solid #E5E7EB">'
@@ -372,7 +397,8 @@ class ChatWidget(QWidget):
         else:
             key = {"missed": "call_log_missed", "no_answer": "call_log_no_answer", "declined": "call_log_declined",
                    "declined_by_me": "call_log_declined", "busy": "call_log_busy", "unreachable": "call_log_unreachable",
-                   "lost": "call_log_lost", "canceled": "call_log_canceled"}.get(reason, "call_log_canceled")
+                   "lost": "call_log_lost", "canceled": "call_log_canceled",
+                   "restricted": "call_log_restricted"}.get(reason, "call_log_canceled")
             label, color = tr(key), "#B91C1C" if reason == "missed" else "#6B7280"
         emb = "\u202b" if lang() == "ar" else "\u202a"
         return (f'<p align="center" style="margin:8px"><span style="background:#F1F5F9;color:{color};font-size:9.5pt">'

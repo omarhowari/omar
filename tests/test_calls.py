@@ -126,7 +126,7 @@ def main():
     print("mute ok")
 
     # video: A shares its screen (1920x1080 red), B turns its camera on (640x480 blue)
-    ca.screen_factory = lambda parent: FakeVideo("#ff0000", (1920, 1080))
+    ca.screen_factory = lambda parent, target=None: FakeVideo("#ff0000", (1920, 1080))
     cb.camera_factory = lambda parent: FakeVideo("#0000ff", (640, 480))
     assert wait(lambda: ca.link is not None and cb.link is not None, 5), "media link not established"
     got_b, got_a = [], []

@@ -310,23 +310,34 @@ class CallController(QObject):
     def is_on(self, kind: str) -> bool:
         return kind in self.sources
 
-    def toggle_video(self, kind: str) -> bool:
-        """kind = "camera" | "screen". Returns the new on/off state."""
+    def toggle_video(self, kind: str, target: Optional[dict] = None) -> bool:
+        """kind = "camera" | "screen" (target = what to share, see ScreenSource). Returns the new state."""
         if self.state != "active":
             return False
         if kind in self.sources:
             self.sources.pop(kind).stop()
         else:
-            src = (self.camera_factory if kind == "camera" else self.screen_factory)(self)
+            if kind == "camera":
+                src = self.camera_factory(self)
+            else:
+                src = self.screen_factory(self, target)
             src.image.connect(lambda img, k=kind: self._local_image(k, img))
             if hasattr(src, "error"):
-                src.error.connect(lambda msg: self.audio_warning.emit(msg))
+                src.error.connect(lambda msg, k=kind: self._source_error(k, msg))
             if not src.start():
                 return False
             self.sources[kind] = src
         self._push_state()
         self.video_state.emit()
         return kind in self.sources
+
+    def _source_error(self, kind, msg):
+        if kind in self.sources and msg == "window closed":     # the shared window was closed
+            self.sources.pop(kind).stop()
+            self._push_state()
+            self.video_state.emit()
+        else:
+            self.audio_warning.emit(msg)
 
     def _local_image(self, kind, img):
         self.local_frame.emit(kind, img)
@@ -356,8 +367,11 @@ class CallController(QObject):
         self.ended.emit(pid, direction, reason, dur)
 
     # ------------------------------------------------------------ user actions
-    def start_call(self, peer_id: str) -> bool:
+    def start_call(self, peer_id: str, gid: str = "") -> bool:
+        """gid: the call is started from a group's member list (the group's call permission applies)."""
         if self.state != "idle" or peer_id not in self.core.peers:
+            return False
+        if gid and not self.core.can(gid, "call"):
             return False
         self.peer_id = peer_id
         self.peer_name = self.core.peers[peer_id].name
@@ -367,7 +381,10 @@ class CallController(QObject):
         self._set("outgoing")
         self.ring_timer.start()
         cid = self.call_id
-        self.core.send_control(peer_id, {"type": "call_invite", "call_id": cid, "port": self.session.port},
+        invite = {"type": "call_invite", "call_id": cid, "port": self.session.port}
+        if gid:
+            invite["gid"] = gid
+        self.core.send_control(peer_id, invite,
                                on_fail=lambda err: self._finish("unreachable") if self.call_id == cid else None)
         return True
 
@@ -408,6 +425,10 @@ class CallController(QObject):
         t = obj.get("type")
         cid = str(obj.get("call_id", ""))
         if t == "call_invite":
+            gid = str(obj.get("gid", ""))
+            if gid and not self.core.can(gid, "call", sender):     # frozen from calling by a group admin
+                self.core.send_control(sender, {"type": "call_reject", "call_id": cid, "reason": "restricted"})
+                return
             if self.state != "idle":
                 self.core.send_control(sender, {"type": "call_reject", "call_id": cid, "reason": "busy"})
                 return
@@ -434,7 +455,8 @@ class CallController(QObject):
             self.ring_timer.stop()
             self._start_media(peer.host, int(obj.get("port", 0)))
         elif t == "call_reject" and self.state == "outgoing":
-            self._finish("busy" if obj.get("reason") == "busy" else "declined")
+            reason = obj.get("reason")
+            self._finish(reason if reason in ("busy", "restricted") else "declined")
         elif t == "call_end":
             self._finish("missed" if self.state == "incoming" else "remote_hangup")
 

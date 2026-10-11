@@ -28,6 +28,10 @@ class History:
         self.db.execute("UPDATE messages SET text=? WHERE id=?", (text, msg_id))
         self.db.commit()
 
+    def set_kind(self, msg_id, kind):
+        self.db.execute("UPDATE messages SET kind=?, text='' WHERE id=?", (kind, msg_id))
+        self.db.commit()
+
     def set_status(self, msg_id, status):
         self.db.execute("UPDATE messages SET status=? WHERE id=?", (status, msg_id))
         self.db.commit()

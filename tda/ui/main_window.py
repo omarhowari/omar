@@ -127,6 +127,7 @@ class MainWindow(QMainWindow):
         core.transfer_changed.connect(self.on_transfer_changed)
         core.group_updated.connect(self.on_group_updated)
         core.group_removed.connect(self.on_group_removed)
+        core.group_message_deleted.connect(self.on_group_message_deleted)
         self._tree_timer = QTimer(self, singleShot=True, interval=400)   # 1000 users: rebuild at most 2-3x/s
         self._tree_timer.timeout.connect(self.refresh_tree)
 
@@ -457,6 +458,12 @@ class MainWindow(QMainWindow):
             if g:
                 online = sum(1 for m in g["members"] if m in self.core.peers)
                 chat.set_group(g["name"], len(g["members"]), online)
+                me = self.s.user_id
+                reason = ""
+                if not self.core.can(g["gid"], "write"):
+                    reason = tr("frozen_admins_only") if g["settings"].get("send") == "admins" else tr("frozen_you")
+                chat.set_permissions(self.core.can(g["gid"], "write"), self.core.can(g["gid"], "media"),
+                                     reason, admin=self.core.my_role(g["gid"]) in ("owner", "admin"))
                 i = self.tabs.indexOf(chat)
                 n = self.unread.get(pid, 0)
                 self.tabs.setTabText(i, f"👥 {g['name']} ({n})" if n else f"👥 {g['name']}")
@@ -577,21 +584,21 @@ class MainWindow(QMainWindow):
             self._sys_line("g:" + gid, tr("group_created", name=self.s.name))
 
     def manage_group(self, key: str):
+        from .group_info import GroupInfoDialog
         gid = key[2:] if is_group_key(key) else key
-        g = self.core.groups.get(gid)
-        if not g:
+        if gid not in self.core.groups:
             return
-        dlg = GroupDialog(self._people(), set(self.core.peers), group=g, my_id=self.s.user_id, parent=self)
-        if not dlg.exec():
-            return
-        if dlg.leave_requested:
-            self.core.leave_group(gid)
-            return
-        new = dlg.members()
-        old = {m for m in g["members"] if m != self.s.user_id}
-        add = {pid: n for pid, n in new.items() if pid not in old}
-        remove = [pid for pid in old if pid not in new]
-        self.core.update_group(gid, name=dlg.name.text(), add=add, remove=remove)
+        GroupInfoDialog(self.core, gid, self._people(), start_call=self.start_call,
+                        open_chat=self.open_chat, parent=self).exec()
+
+    def on_group_message_deleted(self, gid, msg_id, _by):
+        self.history.set_kind(msg_id, "deleted")
+        chat = self.chats.get("g:" + gid)
+        if chat:
+            for it in chat.items:
+                if it.get("id") == msg_id:
+                    it["kind"] = "deleted"
+            chat.schedule_render()
 
     def on_group_updated(self, gid):
         self._update_chat_peer("g:" + gid)
@@ -693,6 +700,12 @@ class MainWindow(QMainWindow):
             chat.schedule_render()
 
     def transfer_action(self, action, tid):
+        if action == "delmsg":
+            chat = self.tabs.currentWidget()
+            if isinstance(chat, ChatWidget) and is_group_key(chat.peer_id):
+                if QMessageBox.question(self, APP_NAME, tr("delete_for_all")) == QMessageBox.StandardButton.Yes:
+                    self.core.delete_group_message(chat.peer_id[2:], tid)
+            return
         if action == "accept":
             self.core.accept_transfer(tid)
         elif action == "decline":
@@ -716,11 +729,14 @@ class MainWindow(QMainWindow):
                 open_path(target)
 
     # ======================================================================= calls
-    def start_call(self, pid):
+    def start_call(self, pid, gid=""):
         if self.calls.state != "idle":
             QMessageBox.information(self, APP_NAME, tr("call_busy_now"))
             return
-        if self.calls.start_call(pid):
+        if gid and not self.core.can(gid, "call"):
+            QMessageBox.information(self, APP_NAME, tr("call_log_restricted"))
+            return
+        if self.calls.start_call(pid, gid=gid):
             self.call_win.refresh()
 
     def on_incoming_call(self, pid, name):

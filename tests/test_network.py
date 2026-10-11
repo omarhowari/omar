@@ -146,7 +146,8 @@ def main():
     assert [m["text"] for m in inbox] == ["رسالة أثناء عدم الاتصال 1", "رسالة أثناء عدم الاتصال 2"]
     assert wait(lambda: st.get(m2) == "delivered" and a.pending_count(bid) == 0)
     b.accept_transfer(offers[0])
-    assert wait(lambda: b.transfers[offers[0]].state == "done", 10)
+    assert wait(lambda: b.transfers[offers[0]].state == "done", 10), (
+        b.transfers[offers[0]].state, b.transfers[offers[0]].error, a.transfers[tq].state, a.transfers[tq].error)
     print("delivered after reconnect (and after sender restart) ok")
 
     # 9) groups: create, fan-out messages, member offline gets them later, leave
@@ -169,8 +170,51 @@ def main():
     a.message_received.connect(a_inbox.append)
     b.send_group_message(gid, "تمام")
     assert wait(lambda: any(m.get("gid") == gid for m in a_inbox) and sum(m.get("gid") == gid for m in c_inbox) == 2)
+    # ---- admin permissions (A = owner, B = admin, C = member)
+    assert a.update_group(gid, admins_add=[bid])
+    assert wait(lambda: b.my_role(gid) == "admin" and c.groups[gid]["admins"] == [a.settings.user_id, bid])
+    assert not c.update_group(gid, name="hacked")                 # members cannot rename (edit = admins)
+    assert not b.update_group(gid, admins_remove=[a.settings.user_id])   # admins cannot demote the owner
+    # B (admin) freezes C from writing and sending media
+    assert b.update_group(gid, restrict={cid: {"write": True, "media": True, "call": False}})
+    assert wait(lambda: not c.can(gid, "write") and not a.can(gid, "write", cid))
+    assert c.send_group_message(gid, "should not go") == ""        # C's own app refuses
+    n_before = len(a_inbox)
+    c.send_message(a.settings.user_id, "bypass attempt", gid=gid)  # even a modified client is dropped
+    wait(lambda: False, 1.5)
+    assert len(a_inbox) == n_before, "restricted member's message must be dropped"
+    assert c.offer_group_files(gid, [str(src)]) == []
+    print("freeze member (write/media) ok")
+    # admins-only group, then open again
+    b.update_group(gid, restrict={cid: {"write": False, "media": False, "call": False}})
+    assert wait(lambda: a.can(gid, "write", cid) and c.can(gid, "write"))
+    a.update_group(gid, settings={"send": "admins"})
+    assert wait(lambda: c.groups[gid]["settings"]["send"] == "admins" and not c.can(gid, "write")
+                and b.can(gid, "write"))
+    b.send_group_message(gid, "admins only now")
+    assert wait(lambda: any(m["text"] == "admins only now" for m in c_inbox))
+    a.update_group(gid, settings={"send": "all"})
+    assert wait(lambda: c.can(gid, "write"))
+    print("admins-only mode ok")
+    # delete for everyone
+    deleted = []
+    c.group_message_deleted.connect(lambda g_, mid, by: deleted.append(mid))
+    assert not c.delete_group_message(gid, gm)                     # members cannot
+    assert a.delete_group_message(gid, gm)
+    assert wait(lambda: gm in deleted)
+    print("delete for everyone ok")
+    # two admins editing at the very same moment: every computer must end with the same group
+    a.update_group(gid, name="اسم أ")
+    b.update_group(gid, name="اسم ب")
+    assert wait(lambda: a.groups[gid]["name"] == b.groups[gid]["name"] == c.groups[gid]["name"]), \
+        (a.groups[gid]["name"], b.groups[gid]["name"], c.groups[gid]["name"])
+    print("concurrent admin edits converge ok:", a.groups[gid]["name"])
+    # owner leaves -> the admin (B) becomes owner
+    a.leave_group(gid)
+    assert wait(lambda: b.groups[gid]["owner"] == bid and c.groups[gid]["owner"] == bid)
+    print("owner left, admin took over ok")
     c.leave_group(gid)
-    assert wait(lambda: cid not in a.groups[gid]["members"] and cid not in b.groups[gid]["members"])
+    assert wait(lambda: cid not in b.groups[gid]["members"])
     print("group reply + leave ok")
     for x in (a, b, c):
         x.stop()

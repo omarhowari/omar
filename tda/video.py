@@ -114,11 +114,15 @@ class MediaLink(QObject):
 
 # ============================================================================ sources
 class ScreenSource(QObject):
-    """Captures the primary screen (with the mouse pointer) a few times per second."""
+    """Captures what the user chose to share a few times per second (with the mouse pointer):
+    target = {"kind": "screen", "index": n}  -> a whole monitor
+             {"kind": "window", "hwnd": h}   -> one application / folder window (Windows)"""
     image = Signal(object)
+    error = Signal(str)
 
-    def __init__(self, parent=None, fps: int = SCREEN_FPS):
+    def __init__(self, parent=None, target: Optional[dict] = None, fps: int = SCREEN_FPS):
         super().__init__(parent)
+        self.target = target or {"kind": "screen", "index": 0}
         self.timer = QTimer(self, interval=int(1000 / fps))
         self.timer.timeout.connect(self._grab)
         self.screen = None
@@ -128,9 +132,16 @@ class ScreenSource(QObject):
         return QGuiApplication.primaryScreen() is not None
 
     def start(self) -> bool:
-        self.screen = QGuiApplication.primaryScreen()
-        if self.screen is None:
-            return False
+        if self.target.get("kind") == "window":
+            from . import winshare
+            if not winshare.is_alive(self.target.get("hwnd")):
+                return False
+        else:
+            screens = QGuiApplication.screens()
+            i = int(self.target.get("index", 0))
+            self.screen = screens[i] if 0 <= i < len(screens) else QGuiApplication.primaryScreen()
+            if self.screen is None:
+                return False
         self.timer.start()
         self._grab()
         return True
@@ -139,17 +150,31 @@ class ScreenSource(QObject):
         self.timer.stop()
 
     def _grab(self):
-        if self.screen is None:
-            return
-        pm = self.screen.grabWindow(0)
-        if pm.isNull():
-            return
-        img = pm.toImage()
-        # draw the mouse pointer so the other side can follow what we point at
-        pos = self.screen.geometry().topLeft()
-        cur = QCursor.pos() - pos
-        ratio = pm.devicePixelRatio() or 1.0
-        x, y = int(cur.x() * ratio), int(cur.y() * ratio)
+        if self.target.get("kind") == "window":
+            from . import winshare
+            hwnd = self.target.get("hwnd")
+            if not winshare.is_alive(hwnd):
+                self.stop()
+                self.error.emit("window closed")
+                return
+            img = winshare.capture_window(hwnd)
+            if img is None:          # minimized: keep the last frame on the other side
+                return
+            rect = winshare.window_rect(hwnd)
+            cur = winshare.cursor_pos()
+            ox, oy = (rect[0], rect[1]) if rect else (0, 0)
+            x, y = (cur[0] - ox, cur[1] - oy) if cur else (-1, -1)
+            ratio = 1.0
+        else:
+            if self.screen is None:
+                return
+            pm = self.screen.grabWindow(0)
+            if pm.isNull():
+                return
+            img = pm.toImage()
+            cur = QCursor.pos() - self.screen.geometry().topLeft()
+            ratio = pm.devicePixelRatio() or 1.0
+            x, y = int(cur.x() * ratio), int(cur.y() * ratio)
         if 0 <= x < img.width() and 0 <= y < img.height():
             p = QPainter(img)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)

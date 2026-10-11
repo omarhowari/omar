@@ -151,7 +151,7 @@ class FakeVideo(QObject):
         self.image.emit(img)
 
 
-a.calls.screen_factory = lambda parent: FakeVideo(parent, "screen")
+a.calls.screen_factory = lambda parent, target=None: FakeVideo(parent, "screen")
 b.calls.camera_factory = lambda parent: FakeVideo(parent, "camera")
 import tda.video as _v
 _v.CameraSource.available = staticmethod(lambda: True)

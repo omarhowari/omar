@@ -74,6 +74,25 @@ class Ringer:
                 pass
 
 
+def toggle_with_picker(parent, c, kind):
+    """Camera: on/off. Screen: when starting, ask what to share (screen / app window / folder)."""
+    from ..video import CameraSource
+    if kind == "camera":
+        if not c.is_on("camera") and not CameraSource.available():
+            QMessageBox.information(parent, tr("call"), tr("no_camera"))
+            return
+        c.toggle_video("camera")
+        return
+    if c.is_on("screen"):
+        c.toggle_video("screen")
+        return
+    from .share_picker import SharePickerDialog
+    exclude = [w.windowTitle() for w in QApplication.topLevelWidgets() if w.isVisible()]
+    dlg = SharePickerDialog(parent, exclude_titles=exclude)
+    if dlg.exec() and dlg.target:
+        c.toggle_video("screen", dlg.target)
+
+
 # ------------------------------------------------------------------ window
 BTN = ("QPushButton {{ background:{bg}; color:white; border:none; border-radius:26px; font-size:13pt;"
        " font-weight:600; min-width:52px; min-height:52px; padding:0 18px; }}"
@@ -193,11 +212,7 @@ class CallWindow(QWidget):
         self.status.setText(f"{d // 60:02d}:{d % 60:02d}" + ("   🔇" if self.c.muted else ""))
 
     def _toggle(self, kind):
-        from ..video import CameraSource
-        if kind == "camera" and not self.c.is_on("camera") and not CameraSource.available():
-            QMessageBox.information(self, tr("call"), tr("no_camera"))
-            return
-        self.c.toggle_video(kind)
+        toggle_with_picker(self, self.c, kind)
 
     def _video_state(self):
         on_bg, off_bg = "#0E4D3C", "#334155"
@@ -304,11 +319,7 @@ class VideoWindow(QWidget):
         self.raise_()
 
     def _toggle(self, kind):
-        from ..video import CameraSource
-        if kind == "camera" and not self.c.is_on("camera") and not CameraSource.available():
-            QMessageBox.information(self, tr("call"), tr("no_camera"))
-            return
-        self.c.toggle_video(kind)
+        toggle_with_picker(self, self.c, kind)
 
     def _fullscreen(self):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
