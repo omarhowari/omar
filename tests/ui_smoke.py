@@ -77,6 +77,12 @@ img.fill(QColor("#0E4D3C"))
 p = QPainter(img); p.fillRect(80, 80, 480, 240, QColor("#B8A068")); p.end()
 pic = tmp / "photo.png"
 img.save(str(pic))
+import tda.ui.dialogs as _dlg
+def _auto_send(self):           # the picture preview appears; screenshot it and press send
+    self.cap.setText("صورة من الزيارة الميدانية" if lang == "ar" else "Photo from the field visit")
+    self.show(); app.processEvents(); self.grab().save(str(out / f"screen_{lang}_image_preview.png"))
+    return 1
+_dlg.ImageSendDialog.exec = _auto_send
 for path in (f, pic):
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(path))])
@@ -84,9 +90,11 @@ for path in (f, pic):
     chat.dropEvent(ev)
 pump(1.5)
 assert len(b.core.transfers) == 2, b.core.transfers
-# B accepts from the links inside the chat card
-for tid in list(b.core.transfers):
-    b.transfer_action("accept", tid)
+# B accepts the spreadsheet from the card; the picture downloads by itself
+pump(0.5)
+for tid, t in list(b.core.transfers.items()):
+    if t.state == "offered":
+        b.transfer_action("accept", tid)
 pump(3)
 assert all(t.state == "done" for t in b.core.transfers.values()), [t.state for t in b.core.transfers.values()]
 print("drag&drop + inline accept ok")

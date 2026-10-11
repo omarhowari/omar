@@ -64,6 +64,7 @@ class Settings:
     chat_bg: str = "pattern"                # "pattern" | "image" | "none"
     chat_bg_image: str = ""
     chat_bg_opacity: int = 80               # 0..100
+    auto_images: bool = True                # accept incoming pictures automatically (like WhatsApp)
 
     @classmethod
     def path(cls) -> Path:

@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QFont, QPixmap
 from PySide6.QtNetwork import QAbstractSocket, QNetworkInterface
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QMainWindow, QMenu, QMessageBox, QSplitter, QStackedWidget,
@@ -24,7 +24,7 @@ from ..i18n import human_size, tr
 from ..calls import CallController
 from ..network import NetworkCore, Peer
 from .call_window import CallWindow
-from .chat import ChatWidget, local_paths
+from .chat import IMAGE_EXT, ChatWidget, local_paths
 from .dialogs import (BroadcastDialog, GroupDialog, HistorySearchDialog, SettingsDialog,
                       TransfersDialog, about_html, open_path)
 from .theme import app_icon, draw_avatar, draw_logo, status_icon
@@ -277,7 +277,9 @@ class MainWindow(QMainWindow):
         pic = branding.custom_welcome()
         if pic is not None:
             pic = pic.scaled(420, 260, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        self.welcome_img.setPixmap(pic if pic is not None else draw_logo(200))
+        # only a custom welcome picture is shown; the logo stays as the app icon, not as a background
+        self.welcome_img.setPixmap(pic if pic is not None else QPixmap())
+        self.welcome_img.setVisible(pic is not None)
         self.welcome_title.setText(tr("welcome_title", name=self.s.app_title.strip() or APP_NAME))
 
     def apply_branding(self):
@@ -662,6 +664,9 @@ class MainWindow(QMainWindow):
         if not chat.has_item(tid):
             chat.add({"id": tid, "kind": "file", "outgoing": t.direction == "out", "text": self._card_json(t),
                       "ts": ts, "peer_name": t.peer_name})
+        if t.direction == "in" and self.s.auto_images and t.total <= 25 * 1024 * 1024 and all(
+                os.path.splitext(f["rel"])[1].lower() in IMAGE_EXT and "/" not in f["rel"] for f in t.files):
+            self.core.accept_transfer(tid)          # pictures download by themselves, like WhatsApp
         if t.direction == "in":
             title = t.title if not t.title.isdigit() else tr("files_n", n=t.title)
             msg = tr("incoming_files", name=t.peer_name, title=title, size=human_size(t.total))

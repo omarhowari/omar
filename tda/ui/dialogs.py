@@ -64,6 +64,7 @@ class SettingsDialog(QDialog):
         self.sound = QCheckBox(tr("sound"), checked=s.sound)
         self.minimized = QCheckBox(tr("start_minimized"), checked=s.start_minimized)
         self.autostart = QCheckBox(tr("autostart"), checked=s.autostart)
+        self.auto_images = QCheckBox(tr("auto_images"), checked=s.auto_images)
         self.autostart.setEnabled(sys.platform == "win32")
 
         g1 = QGroupBox(tr("user"))
@@ -89,6 +90,7 @@ class SettingsDialog(QDialog):
         f3.addRow(self.sound)
         f3.addRow(self.minimized)
         f3.addRow(self.autostart)
+        f3.addRow(self.auto_images)
 
         g5 = QGroupBox(tr("chat_background"))
         f5 = QFormLayout(g5)
@@ -173,6 +175,7 @@ class SettingsDialog(QDialog):
         s.notify, s.sound = self.notify.isChecked(), self.sound.isChecked()
         s.start_minimized = self.minimized.isChecked()
         s.autostart = self.autostart.isChecked()
+        s.auto_images = self.auto_images.isChecked()
         s.chat_bg = self.bg_mode.currentData()
         s.chat_bg_image = self.bg_image.text().strip()
         s.chat_bg_opacity = self.bg_opacity.value()
@@ -687,3 +690,70 @@ class GroupDialog(QDialog):
         if QMessageBox.question(self, APP_NAME, tr("group_leave_confirm", name=self.name.text())) == QMessageBox.StandardButton.Yes:
             self.leave_requested = True
             self.accept()
+
+
+# ============================================================================ picture preview
+class ImageSendDialog(QDialog):
+    """WhatsApp-style preview of the pictures about to be sent, with an optional caption."""
+
+    def __init__(self, paths, peer_name: str, parent=None):
+        super().__init__(parent)
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QImageReader, QPixmap
+        from .theme import send_icon
+        from ..i18n import lang
+        self.setWindowTitle(tr("image_preview_title", name=peer_name))
+        self.resize(720, 560)
+        self.setStyleSheet("QDialog { background: #E9EDEF; }")
+        self.big = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.big.setMinimumHeight(330)
+        self.strip = QListWidget()
+        self.strip.setViewMode(QListWidget.ViewMode.IconMode)
+        self.strip.setFlow(QListWidget.Flow.LeftToRight)
+        self.strip.setWrapping(False)
+        self.strip.setIconSize(QSize(72, 72))
+        self.strip.setFixedHeight(100)
+        self.pix = []
+        for p in paths:
+            r = QImageReader(p)
+            r.setAutoTransform(True)
+            r.setScaledSize(r.size().scaled(QSize(1200, 1200), Qt.AspectRatioMode.KeepAspectRatio)
+                            if r.size().isValid() else QSize())
+            img = r.read()
+            pm = QPixmap.fromImage(img) if not img.isNull() else QPixmap()
+            self.pix.append(pm)
+            it = QListWidgetItem()
+            if not pm.isNull():
+                from PySide6.QtGui import QIcon
+                it.setIcon(QIcon(pm.scaled(72, 72, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                           Qt.TransformationMode.SmoothTransformation)))
+            it.setToolTip(os.path.basename(p))
+            self.strip.addItem(it)
+        self.strip.currentRowChanged.connect(self._show)
+        self.strip.setVisible(len(paths) > 1)
+        self.cap = QLineEdit(placeholderText=tr("add_caption"))
+        self.cap.setStyleSheet("QLineEdit { border-radius: 20px; padding: 9px 14px; font-size: 10.5pt; }")
+        self.cap.returnPressed.connect(self.accept)
+        send = QPushButton(objectName="SendRound")
+        send.setIcon(send_icon(lang() == "ar"))
+        send.setIconSize(QSize(24, 24))
+        send.setFixedSize(48, 48)
+        send.clicked.connect(self.accept)
+        row = QHBoxLayout()
+        row.addWidget(self.cap, 1)
+        row.addWidget(send)
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.big, 1)
+        lay.addWidget(self.strip)
+        lay.addLayout(row)
+        self.strip.setCurrentRow(0)
+        self._show(0)
+        self.cap.setFocus()
+
+    def _show(self, i):
+        if 0 <= i < len(self.pix) and not self.pix[i].isNull():
+            self.big.setPixmap(self.pix[i].scaled(660, 360, Qt.AspectRatioMode.KeepAspectRatio,
+                                                  Qt.TransformationMode.SmoothTransformation))
+
+    def caption(self) -> str:
+        return self.cap.text().strip()

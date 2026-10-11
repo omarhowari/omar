@@ -2,7 +2,7 @@
 
 ## ⬇️ تحميل البرنامج
 
-**[⬇️ اضغط هنا لتحميل TDA-Setup.exe (النسخة 1.3)](https://github.com/omarhowari/omar/raw/main/download/TDA-Setup.exe)**
+**[⬇️ اضغط هنا لتحميل TDA-Setup.exe (النسخة 1.4)](https://github.com/omarhowari/omar/raw/main/download/TDA-Setup.exe)**
 
 أو نفس المثبّت مضغوطاً: [TDA.zip](https://github.com/omarhowari/omar/raw/main/download/TDA.zip). يعمل على Windows 10 و 11 (64-bit).
 إذا ظهر تحذير "Windows protected your PC" اضغط **More info** ثم **Run anyway**.

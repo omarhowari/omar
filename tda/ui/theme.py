@@ -155,6 +155,17 @@ QPushButton:hover {{ background: #F9FAFB; border-color: {ACCENT}; }}
 QPushButton#Primary {{ background: {ACCENT}; color: white; border: none; font-weight: 600; }}
 QPushButton#Primary:hover {{ background: {ACCENT_DARK}; }}
 QPushButton#Primary:disabled {{ background: #CBD5E1; color: #F8FAFC; }}
+#ComposeBar {{ background: #F0F2F5; border-top: 1px solid #E5E7EB; }}
+#ComposeBox {{ background: white; border: 1px solid #D1D5DB; border-radius: 24px; }}
+QPlainTextEdit#Compose {{ background: transparent; border: none; padding: 8px 4px; font-size: 10.5pt; }}
+QPushButton#SendRound {{ background: {ACCENT}; border: none; border-radius: 22px; padding: 0; }}
+QPushButton#SendRound:hover {{ background: {ACCENT_DARK}; }}
+QPushButton#Attach {{ font-size: 16pt; background: transparent; border: none; border-radius: 20px; padding: 0; color: #54656F; }}
+QPushButton#Attach:hover {{ background: #F0F2F5; }}
+QPushButton#Attach::menu-indicator {{ image: none; width: 0; }}
+QMenu {{ background: white; border: 1px solid #D1D5DB; padding: 4px; }}
+QMenu::item {{ padding: 8px 22px; border-radius: 6px; font-size: 10.5pt; }}
+QMenu::item:selected {{ background: {ACCENT_SOFT}; color: #111827; }}
 QPushButton:disabled {{ color: #9CA3AF; background: #F3F4F6; }}
 QTabWidget::pane {{ border: none; background: white; }}
 QTabBar::tab {{ background: #E5E7EB; padding: 7px 14px; margin: 2px 2px 0 2px; border-top-left-radius: 6px; border-top-right-radius: 6px; }}
@@ -170,6 +181,24 @@ QProgressBar::chunk {{ background: {ACCENT}; border-radius: 4px; }}
 QGroupBox {{ font-weight: 600; border: 1px solid #E5E7EB; border-radius: 8px; margin-top: 12px; padding-top: 8px; background: white; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; right: 10px; padding: 0 4px; }}
 """
+
+
+def send_icon(rtl: bool) -> QIcon:
+    """White paper-plane arrow; points left in Arabic like WhatsApp."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QPolygonF
+    pm = QPixmap(48, 48)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("white"))
+    pts = [QPointF(8, 8), QPointF(42, 24), QPointF(8, 40), QPointF(13, 26), QPointF(28, 24), QPointF(13, 22)]
+    if rtl:
+        pts = [QPointF(48 - q.x(), q.y()) for q in pts]
+    p.drawPolygon(QPolygonF(pts))
+    p.end()
+    return QIcon(pm)
 
 
 # ------------------------------------------------------------------ chat background

@@ -10,19 +10,37 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QRect, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QRect, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPixmap
-from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
+from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QPlainTextEdit,
                                QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..i18n import human_size, lang, tr
-from .theme import ACCENT, GOLD, chat_pattern, status_icon
+from .theme import ACCENT, GOLD, chat_pattern, send_icon, status_icon
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 FILE_ICONS = {".pdf": "📕", ".doc": "📘", ".docx": "📘", ".xls": "📗", ".xlsx": "📗", ".csv": "📗",
               ".ppt": "📙", ".pptx": "📙", ".zip": "🗜️", ".rar": "🗜️", ".7z": "🗜️", ".mp3": "🎵",
               ".wav": "🎵", ".mp4": "🎬", ".avi": "🎬", ".mkv": "🎬", ".exe": "⚙️", ".txt": "📄",
               ".png": "🖼️", ".jpg": "🖼️", ".jpeg": "🖼️", ".gif": "🖼️", ".bmp": "🖼️", ".webp": "🖼️"}
+
+
+_size_cache: dict = {}
+
+
+def image_size(path: str):
+    """Width/height from the file header only (fast), cached."""
+    from PySide6.QtGui import QImageReader
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return None
+    if key not in _size_cache:
+        r = QImageReader(path)
+        r.setAutoTransform(True)
+        sz = r.size()
+        _size_cache[key] = (sz.width(), sz.height()) if sz.isValid() else None
+    return _size_cache[key]
 
 
 def local_paths(mime) -> list[str]:
@@ -180,32 +198,50 @@ class ChatWidget(QWidget):
                                    f" border: 3px dashed {GOLD}; border-radius: 14px;")
         self.overlay.hide()
 
+        # ---- WhatsApp-style compose bar:  [📎 | text that grows | ➤]
         self.input = MessageInput()
-        self.input.setPlaceholderText(tr("type_message"))
-        self.input.setFixedHeight(84)
+        self.input.setObjectName("Compose")
+        self.input.setPlaceholderText(tr("type_message_short"))
+        self.input.setToolTip(tr("drop_hint"))
+        self.input.setFrameShape(QFrame.Shape.NoFrame)
+        self.input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.input.setFixedHeight(40)
+        self.input.document().documentLayout().documentSizeChanged.connect(lambda _s: self._grow())
         self.input.submit.connect(self._submit)
         self.input.files_pasted.connect(self._send_paths)
 
-        self.btn_send = QPushButton(tr("send"), objectName="Primary")
+        self.btn_attach = QPushButton("📎")
+        self.btn_attach.setObjectName("Attach")
+        self.btn_attach.setToolTip(tr("attach"))
+        self.btn_attach.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_attach.setFixedSize(40, 40)
+        menu = QMenu(self.btn_attach)
+        menu.addAction("🖼  " + tr("attach_image"), self._pick_images)
+        menu.addAction("📄  " + tr("attach_file"), self._pick_files)
+        menu.addAction("📁  " + tr("attach_folder"), self._pick_folder)
+        self.btn_attach.setMenu(menu)
+
+        self.btn_send = QPushButton()
+        self.btn_send.setObjectName("SendRound")
+        self.btn_send.setIcon(send_icon(lang() == "ar"))
+        self.btn_send.setIconSize(QSize(22, 22))
+        self.btn_send.setFixedSize(44, 44)
+        self.btn_send.setToolTip(tr("send"))
+        self.btn_send.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_send.clicked.connect(self._submit)
-        self.btn_file = QPushButton(tr("send_file"))
-        self.btn_file.clicked.connect(self._pick_files)
-        self.btn_folder = QPushButton(tr("send_folder"))
-        self.btn_folder.clicked.connect(self._pick_folder)
 
-        bl = QHBoxLayout()
-        bl.addWidget(self.btn_file)
-        bl.addWidget(self.btn_folder)
-        bl.addStretch(1)
-        bl.addWidget(QLabel(tr("drop_hint"), objectName="Muted"))
-        bl.addStretch(1)
-        bl.addWidget(self.btn_send)
+        box = QFrame(objectName="ComposeBox")
+        bx = QHBoxLayout(box)
+        bx.setContentsMargins(6, 3, 6, 3)
+        bx.setSpacing(4)
+        bx.addWidget(self.btn_attach, 0, Qt.AlignmentFlag.AlignBottom)
+        bx.addWidget(self.input, 1)
+        bx.addWidget(self.btn_send, 0, Qt.AlignmentFlag.AlignBottom)
 
-        bottom = QWidget()
-        bv = QVBoxLayout(bottom)
-        bv.setContentsMargins(10, 8, 10, 10)
-        bv.addWidget(self.input)
-        bv.addLayout(bl)
+        bottom = QFrame(objectName="ComposeBar")
+        bv = QHBoxLayout(bottom)
+        bv.setContentsMargins(12, 8, 12, 10)
+        bv.addWidget(box)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -222,7 +258,7 @@ class ChatWidget(QWidget):
         self.status_lbl.setPixmap(status_icon(status).pixmap(18, 18))
         self.sub.setText(f"{tr('status_' + status)}  ·  {info}" if info else tr("status_" + status))
         self.btn_call.setEnabled(self.online)     # messages and files can wait; calls cannot
-        self.input.setPlaceholderText(tr("type_message") if self.online else tr("peer_offline_queue"))
+        self.input.setPlaceholderText(tr("type_message_short") if self.online else tr("peer_offline_queue"))
 
     def set_group(self, name: str, members: int, online: int):
         self.peer_name = name
@@ -230,7 +266,7 @@ class ChatWidget(QWidget):
         self.online = True
         self.status_lbl.setPixmap(status_icon("available" if online else "offline").pixmap(18, 18))
         self.sub.setText(tr("group_members", n=members, online=online))
-        self.input.setPlaceholderText(tr("type_message"))
+        self.input.setPlaceholderText(tr("type_message_short"))
 
     def load(self, rows: list[dict]):
         self.items = rows
@@ -255,6 +291,12 @@ class ChatWidget(QWidget):
     def _to_bottom(self):
         sb = self.view.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def _grow(self):
+        h = int(self.input.document().size().height()) + 14
+        self.input.setFixedHeight(max(40, min(140, h)))
+        self.input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if h > 140
+                                              else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def schedule_render(self):
         if not self._render_timer.isActive():
@@ -386,6 +428,8 @@ class ChatWidget(QWidget):
         bg = "#E7F3EE" if mine else "#FFFFFF"
         who = tr("me") if mine else html.escape(it.get("peer_name") or self.peer_name)
         emb = "\u202b" if lang() == "ar" else "\u202a"
+        if n == 1 and not d.get("is_dir") and os.path.splitext(title)[1].lower() in IMAGE_EXT:
+            return self._image_card(it, d, tid, state, live, mine, hhmm, side, bg, who, line, a)
         return (f'<table align="{side}" cellspacing="0" cellpadding="10" '
                 f'style="background:{bg};margin:4px 10px;border:1px solid #D6E4DD">'
                 f'<tr><td><span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span>'
@@ -393,6 +437,34 @@ class ChatWidget(QWidget):
                 f'<span style="font-size:20pt">{icon}</span> <span style="font-size:10.5pt;color:#111827"><b>{emb}{name}\u202c</b></span>'
                 f'\u200f <span style="color:#6B7280;font-size:9pt">\u200f({size})\u200f</span>{thumb}<br>'
                 f'<span style="font-size:9.5pt">{line}</span></td></tr></table><br clear="all">')
+
+    def _image_card(self, it, d, tid, state, live, mine, hhmm, side, bg, who, line, a) -> str:
+        """WhatsApp-style picture bubble: the photo itself, a small time/status line under it."""
+        src = d.get("source", "") if mine else (d.get("open", "") if state == "done" else "")
+        size = image_size(src) if src and os.path.exists(src) else None
+        if size:
+            w, h = size
+            scale = min(1.0, 300 / max(1, w), 340 / max(1, h))
+            w, h = max(40, int(w * scale)), max(40, int(h * scale))
+            pic = (f'<a href="tda:open:{tid}"><img src="{QUrl.fromLocalFile(src).toString()}" '
+                   f'width="{w}" height="{h}"></a>')
+        else:   # not downloaded yet
+            pic = (f'<table cellpadding="26" style="background:#E2E8F0"><tr><td align="center">'
+                   f'<span style="font-size:30pt">🖼</span><br><span style="color:#64748B;font-size:9pt">'
+                   f'{human_size(int(d.get("size", 0)))}</span></td></tr></table>')
+        if state == "done":
+            status = '<span style="color:#16A34A">✓✓</span>' if mine else ""
+        elif state in ("accepted", "active"):
+            pct = int(100 * live.done / live.total) if (live and live.total) else 0
+            status = f'<span style="color:{ACCENT}">{pct}%</span> {a("cancel", "✖", "#B91C1C")}'
+        else:
+            status = line
+        head = "" if mine or not self.is_group else f'<span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span><br>'
+        return (f'<table align="{side}" cellspacing="0" cellpadding="4" '
+                f'style="background:{bg};margin:4px 10px;border:1px solid #D6E4DD">'
+                f'<tr><td>{head}{pic}<br>'
+                f'<span style="color:#9CA3AF;font-size:8pt">{hhmm}</span> &nbsp;<span style="font-size:9pt">{status}</span>'
+                f'</td></tr></table><br clear="all">')
 
     def _link(self, url: QUrl):
         s = url.toString()
@@ -405,14 +477,30 @@ class ChatWidget(QWidget):
     # ------------------------------------------------------------------ actions
     def _submit(self):
         text = self.input.toPlainText().strip()
-        if not text or not self.online:
+        if not text:
             return
         self.input.clear()
         self.send_text.emit(self.peer_id, text)
 
     def _send_paths(self, paths):
-        if paths and self.online:
+        paths = [p for p in (paths or []) if p]
+        if not paths:
+            return
+        if all(os.path.isfile(p) and os.path.splitext(p)[1].lower() in IMAGE_EXT for p in paths):
+            from .dialogs import ImageSendDialog          # WhatsApp-style preview + caption
+            dlg = ImageSendDialog(paths, self.peer_name, self)
+            if not dlg.exec():
+                return
             self.send_paths.emit(self.peer_id, list(paths))
+            if dlg.caption():
+                self.send_text.emit(self.peer_id, dlg.caption())
+            return
+        self.send_paths.emit(self.peer_id, list(paths))
+
+    def _pick_images(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, tr("attach_image"), "", f"{tr('images')} (*.png *.jpg *.jpeg *.gif *.bmp *.webp *.heic *.tif *.tiff)")
+        self._send_paths(paths)
 
     def _pick_files(self):
         paths, _ = QFileDialog.getOpenFileNames(self, tr("send_file"))
@@ -425,7 +513,7 @@ class ChatWidget(QWidget):
 
     # drag & drop: any file type, any number of files, folders too
     def dragEnterEvent(self, e):
-        if local_paths(e.mimeData()) and self.online:
+        if local_paths(e.mimeData()):
             e.acceptProposedAction()
             self.overlay.setText("📥\n" + tr("drop_here", name=self.peer_name))
             self.overlay.setGeometry(self.view.rect().adjusted(12, 12, -12, -12))
@@ -433,7 +521,7 @@ class ChatWidget(QWidget):
             self.overlay.raise_()
 
     def dragMoveEvent(self, e):
-        if local_paths(e.mimeData()) and self.online:
+        if local_paths(e.mimeData()):
             e.acceptProposedAction()
 
     def dragLeaveEvent(self, e):
