@@ -441,6 +441,9 @@ class NetworkCore(QObject):
     group_removed = Signal(str)            # gid
     group_message_deleted = Signal(str, str, str)   # gid, msg id, deleted by (user id)
     message_deleted = Signal(str, str)     # private chat: sender id, msg id (sender deleted it for everyone)
+    message_read = Signal(str, list, str)   # reader id, msg ids, gid ("" = private)
+    chat_setting = Signal(str, str, dict)  # sender, gid, {"disappear": seconds}
+    message_edited = Signal(dict)          # {"from","gid","msg_id","text"}
     reaction = Signal(dict)                # {"gid","from","from_name","msg_id","emoji"} ("" emoji = removed)
     update_available = Signal(str, str)    # newer version, peer id that has it
     update_progress = Signal(int, int)     # bytes done, total
@@ -693,6 +696,28 @@ class NetworkCore(QObject):
             self.reaction.emit({"gid": gid, "from": sender, "msg_id": str(obj.get("msg_id", ""))[:64],
                                 "from_name": peer.name if peer else str(obj.get("from_name", "?"))[:64],
                                 "emoji": emoji})
+        elif t == "read":
+            conn.reply({"type": "ack"})
+            ids = [str(x)[:64] for x in (obj.get("ids") or [])[:500]]
+            if ids:
+                self.message_read.emit(sender, ids, str(obj.get("gid", ""))[:64])
+        elif t == "chat_setting":
+            conn.reply({"type": "ack"})
+            gid = str(obj.get("gid", ""))[:64]
+            if gid and sender not in self.groups.get(gid, {}).get("members", {}):
+                return
+            try:
+                secs = max(0, min(10 ** 8, int(obj.get("disappear", 0))))
+            except (TypeError, ValueError):
+                return
+            self.chat_setting.emit(sender, gid, {"disappear": secs})
+        elif t == "msg_edit":
+            conn.reply({"type": "ack"})
+            gid = str(obj.get("gid", ""))[:64]
+            if gid and not G.can(self.groups.get(gid, {}), sender, "write"):
+                return
+            self.message_edited.emit({"from": sender, "gid": gid, "msg_id": str(obj.get("msg_id", ""))[:64],
+                                      "text": str(obj.get("text", ""))[:100_000]})
         elif t == "msg_delete":
             conn.reply({"type": "ack"})
             self.message_deleted.emit(sender, str(obj.get("msg_id", ""))[:64])
@@ -1089,6 +1114,39 @@ class NetworkCore(QObject):
                 obj["gid"] = gid
             # one outbox slot per (message, me): a newer reaction replaces an undelivered older one
             self._send_or_queue(pid, f"re-{msg_id}", obj)
+
+    def send_read(self, sender: str, ids: List[str], gid: str = ""):
+        """Blue ticks: tell the sender I have seen his messages."""
+        if not ids:
+            return
+        obj = {"type": "read", "ids": list(ids)}
+        if gid:
+            obj["gid"] = gid
+        self._send_or_queue(sender, f"read-{ids[-1]}", obj)
+
+    def send_chat_setting(self, peer_or_group: str, disappear: int):
+        if peer_or_group.startswith("g:"):
+            gid = peer_or_group[2:]
+            targets = [p for p in self.groups.get(gid, {}).get("members", {}) if p != self.settings.user_id]
+        else:
+            gid, targets = "", [peer_or_group]
+        for pid in targets:
+            obj = {"type": "chat_setting", "disappear": int(disappear)}
+            if gid:
+                obj["gid"] = gid
+            self._send_or_queue(pid, f"cs-{gid or pid}", obj)
+
+    def edit_message(self, peer_or_group: str, msg_id: str, text: str):
+        if peer_or_group.startswith("g:"):
+            gid = peer_or_group[2:]
+            targets = [p for p in self.groups.get(gid, {}).get("members", {}) if p != self.settings.user_id]
+        else:
+            gid, targets = "", [peer_or_group]
+        for pid in targets:
+            obj = {"type": "msg_edit", "msg_id": msg_id, "text": text}
+            if gid:
+                obj["gid"] = gid
+            self._send_or_queue(pid, f"edit-{msg_id}", obj)
 
     def delete_message(self, peer_or_group: str, msg_id: str, own: bool = True) -> bool:
         """Delete for everyone: my own message (private or group), or any group message if I am an admin."""

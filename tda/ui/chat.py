@@ -34,6 +34,91 @@ QScrollBar::handle:vertical:hover { background: rgba(0,0,0,0.38); }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; border: none; background: none; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
 """
+_res_cache: dict = {}
+
+
+def _resource(key: str):
+    """Images drawn by TDA for the chat (cached)."""
+    from urllib.parse import unquote
+    if key in _res_cache:
+        return _res_cache[key]
+    img = None
+    if key.startswith("tick/"):
+        img = _tick_image(key[5:])
+    elif key.startswith("round/"):
+        try:
+            _, size, path = key.split("/", 2)
+            w, h = (int(x) for x in size.split("x"))
+            img = _rounded_image(unquote(path), w, h)
+        except ValueError:
+            img = None
+    if len(_res_cache) > 400:
+        _res_cache.clear()
+    _res_cache[key] = img
+    return img
+
+
+def _rounded_image(path: str, w: int, h: int):
+    from PySide6.QtGui import QPainterPath
+    src = QImage(path)
+    if src.isNull():
+        return None
+    dpr = 2
+    src = src.scaled(w * dpr, h * dpr, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                     Qt.TransformationMode.SmoothTransformation)
+    out = QImage(w * dpr, h * dpr, QImage.Format.Format_ARGB32_Premultiplied)
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    clip = QPainterPath()
+    clip.addRoundedRect(0, 0, w * dpr, h * dpr, 9 * dpr, 9 * dpr)
+    p.setClipPath(clip)
+    p.drawImage((w * dpr - src.width()) // 2, (h * dpr - src.height()) // 2, src)
+    p.end()
+    out.setDevicePixelRatio(dpr)
+    return out
+
+
+def _tick_image(kind: str):
+    """WhatsApp-style ticks: sent (one grey), delivered (two grey), read (two blue), pending (clock)."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QPen
+    dpr = 3
+    w, h = (18, 11) if kind in ("delivered", "read") else (12, 11)
+    img = QImage(w * dpr, h * dpr, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.scale(dpr, dpr)
+    color = QColor("#53BDEB") if kind == "read" else QColor("#DC2626") if kind == "failed" else QColor("#8696A0")
+    pen = QPen(color, 1.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    if kind == "pending":
+        p.drawEllipse(QPointF(6, 5.5), 4.3, 4.3)
+        p.drawLine(QPointF(6, 5.5), QPointF(6, 3))
+        p.drawLine(QPointF(6, 5.5), QPointF(7.8, 6.6))
+    elif kind == "failed":
+        p.drawEllipse(QPointF(6, 5.5), 4.5, 4.5)
+        p.drawLine(QPointF(6, 3), QPointF(6, 6.2))
+        p.drawPoint(QPointF(6, 8))
+    else:
+        p.drawPolyline([QPointF(1.5, 6), QPointF(4.3, 8.8), QPointF(10.5, 2)])
+        if kind in ("delivered", "read"):
+            p.drawPolyline([QPointF(7.6, 8.4), QPointF(8.2, 8.8), QPointF(14.6, 2)])
+    p.end()
+    img.setDevicePixelRatio(dpr)
+    return img
+
+
+def tick_html(status: str) -> str:
+    kind = {"read": "read", "delivered": "delivered", "queued": "sent", "sent": "sent",
+            "failed": "failed"}.get(status or "", "pending")
+    w = 18 if kind in ("delivered", "read") else 12
+    return f'<img src="tdaimg:tick/{kind}" width="{w}" height="11">'
+
+
 REACTIONS = ("👍", "❤️", "😂", "😮", "😢", "🙏")
 MORE_EMOJIS = ("👍", "👎", "❤️", "🔥", "👏", "🎉", "😂", "🤣", "😊", "😍", "🤔", "😮", "😢", "😡", "🙏", "💯",
                "✅", "❌", "👌", "🤝", "💪", "🌹", "☕", "⭐")
@@ -144,8 +229,92 @@ class ChatView(QTextBrowser):
                                      Qt.TransformationMode.SmoothTransformation)
                 p.drawPixmap(QRect((r.width() - sc.width()) // 2, (r.height() - sc.height()) // 2,
                                    sc.width(), sc.height()), sc)
+        p.setOpacity(1.0)
+        self._paint_bubbles(p)
         p.end()
         super().paintEvent(e)
+
+    # ---- WhatsApp-like rounded bubbles: Qt rich text can only draw square table backgrounds, so the
+    #      tables are made transparent and their rounded shapes (with a small tail) are painted here.
+    BUBBLE_RADIUS = 8.0
+    bubble_border = False
+
+    def setHtml(self, text):
+        super().setHtml(text)
+        self._collect_bubbles()
+
+    def _collect_bubbles(self):
+        from PySide6.QtGui import QTextFrameFormat, QTextTable
+        self._bubbles = []
+
+        def walk(frame, depth):
+            for child in frame.childFrames():
+                if isinstance(child, QTextTable):
+                    fmt = child.format()
+                    brush = fmt.background()
+                    if brush.style() != Qt.BrushStyle.NoBrush:
+                        color = QColor(brush.color())
+                        al = fmt.alignment()
+                        side = ("right" if (al & Qt.AlignmentFlag.AlignRight or
+                                            fmt.position() == QTextFrameFormat.Position.FloatRight) else
+                                "left" if (al & Qt.AlignmentFlag.AlignLeft or
+                                           fmt.position() == QTextFrameFormat.Position.FloatLeft) else "")
+                        fmt.setBackground(Qt.BrushStyle.NoBrush)
+                        fmt.setBorder(0)
+                        fmt.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_None)
+                        child.setFormat(fmt)
+                        self._bubbles.append((child, color, depth == 0 and bool(side), side))
+                walk(child, depth + 1)
+
+        walk(self.document().rootFrame(), 0)
+
+    def _paint_bubbles(self, p):
+        from PySide6.QtCore import QPointF, QRectF
+        from PySide6.QtGui import QPainterPath, QPen
+        if not getattr(self, "_bubbles", None):
+            return
+        layout = self.document().documentLayout()
+        dx, dy = self.horizontalScrollBar().value(), self.verticalScrollBar().value()
+        view_h = self.viewport().height()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for table, color, top, side in self._bubbles:
+            fmt = table.format()
+            r = layout.frameBoundingRect(table)
+            # (Qt reports the box shifted by the cell padding and including the margins)
+            pad = fmt.cellPadding()
+            r = QRectF(r.x() - pad - dx, r.y() - pad - dy,
+                       r.width() - fmt.leftMargin() - fmt.rightMargin(),
+                       r.height() - fmt.topMargin() - fmt.bottomMargin())
+            if r.bottom() < 0 or r.top() > view_h or r.width() <= 0:
+                continue
+            rad = self.BUBBLE_RADIUS if top else 6.0
+            path = QPainterPath()
+            path.addRoundedRect(r, rad, rad)
+            if top:
+                tail = QPainterPath()          # small tail at the top outer corner
+                if side == "right":
+                    tail.moveTo(r.right() - rad, r.top())
+                    tail.lineTo(r.right() + 7, r.top())
+                    tail.lineTo(r.right(), r.top() + 9)
+                else:
+                    tail.moveTo(r.left() + rad, r.top())
+                    tail.lineTo(r.left() - 7, r.top())
+                    tail.lineTo(r.left(), r.top() + 9)
+                tail.closeSubpath()
+                path = path.united(tail)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(0, 0, 0, 28))       # soft shadow
+                p.drawPath(path.translated(0, 1))
+            p.setBrush(color)
+            p.setPen(QPen(QColor("#D1D5DB"), 0.8) if (top and self.bubble_border) else Qt.PenStyle.NoPen)
+            p.drawPath(path)
+
+    def loadResource(self, rtype, url):
+        """tdaimg:round/<w>x<h>/<path>  -> picture with rounded corners;  tdaimg:tick/<kind> -> ✓ / ✓✓ icons."""
+        u = url.toString()
+        if u.startswith("tdaimg:"):
+            return _resource(u[7:])
+        return super().loadResource(rtype, url)
 
     def scrollContentsBy(self, dx, dy):
         super().scrollContentsBy(dx, dy)
@@ -191,6 +360,15 @@ class MessageInput(QPlainTextEdit):
         super().keyPressEvent(e)
 
 
+_NAME_COLORS = ("#428177", "#C2410C", "#7C3AED", "#0E7490", "#BE185D", "#4D7C0F", "#B45309", "#1D4ED8")
+
+
+def _name_color(name: str) -> str:
+    """Each sender keeps the same colour in group chats (like WhatsApp)."""
+    import zlib
+    return _NAME_COLORS[zlib.crc32(name.encode("utf-8")) % len(_NAME_COLORS)]
+
+
 def _is_dark(color: str) -> bool:
     c = QColor(color)
     return c.isValid() and (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) < 140
@@ -221,6 +399,7 @@ class ChatWidget(QWidget):
     start_call = Signal(str)            # peer_id
     transfer_action = Signal(str, str)  # action, tid
     manage_group = Signal(str)          # chat key "g:<gid>"
+    header_menu = Signal(str, object)    # chat key, global position of the ⋮ button
     message_action = Signal(str, str, str)   # action (react|forward|star|delete_me|delete_all|download), msg id, arg
 
     def __init__(self, peer_id: str, peer_name: str, my_name: str, parent=None, is_group: bool = False):
@@ -248,17 +427,59 @@ class ChatWidget(QWidget):
         tl.addWidget(self.sub)
         hl.addWidget(self.status_lbl)
         hl.addLayout(tl, 1)
-        self.btn_call = QPushButton(tr("call_btn"), objectName="Primary")
-        self.btn_call.setCursor(Qt.CursorShape.PointingHandCursor)
+        # WhatsApp-style header icons:  📞  🔍  ⋮
+        from .theme import svg_icon
+
+        def icon_btn(name, tip):
+            b = QPushButton(objectName="HeadIcon")
+            b.setIcon(svg_icon(name))
+            b.setIconSize(QSize(22, 22))
+            b.setFixedSize(40, 40)
+            b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet("QPushButton#HeadIcon{border:none;border-radius:20px;background:transparent}"
+                            "QPushButton#HeadIcon:hover{background:#E9EDEF}"
+                            "QPushButton#HeadIcon:disabled{background:transparent}")
+            return b
+
+        self.btn_call = icon_btn("call", tr("call_btn"))
         self.btn_call.clicked.connect(lambda: self.start_call.emit(self.peer_id))
+        self.btn_search = icon_btn("search", tr("search"))
+        self.btn_search.clicked.connect(self.toggle_search)
+        self.btn_more = icon_btn("more", tr("more_options"))
+        self.btn_more.clicked.connect(lambda: self.header_menu.emit(
+            self.peer_id, self.btn_more.mapToGlobal(self.btn_more.rect().bottomLeft())))
         hl.addWidget(self.btn_call)
-        self.btn_manage = QPushButton(tr("group_manage"))
-        self.btn_manage.clicked.connect(lambda: self.manage_group.emit(self.peer_id))
-        hl.addWidget(self.btn_manage)
+        hl.addWidget(self.btn_search)
+        hl.addWidget(self.btn_more)
+        self.btn_manage = self.btn_more          # (kept for older code)
         self.btn_call.setVisible(not is_group)
-        self.btn_manage.setVisible(is_group)
         self.my_id = ""
         self.reply_to: dict | None = None
+
+        self.search_bar = QFrame(objectName="SearchBar")
+        self.search_bar.setStyleSheet("#SearchBar{background:#F0F2F5;border-bottom:1px solid #E5E7EB}")
+        sl = QHBoxLayout(self.search_bar)
+        sl.setContentsMargins(12, 6, 12, 6)
+        from PySide6.QtWidgets import QLineEdit
+        self.search_box = QLineEdit(placeholderText=tr("search_in_chat"))
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.returnPressed.connect(lambda: self.find_text(False))
+        self.search_box.textChanged.connect(lambda _t: self.find_text(False, restart=True))
+        up, down, close = QPushButton("▲"), QPushButton("▼"), QPushButton("✕")
+        for b in (up, down, close):
+            b.setFixedSize(32, 30)
+            b.setStyleSheet("border:none;background:transparent;font-size:11pt;color:#54656F;padding:0")
+        up.clicked.connect(lambda: self.find_text(True))
+        down.clicked.connect(lambda: self.find_text(False))
+        close.clicked.connect(self.toggle_search)
+        self.search_count = QLabel(objectName="Muted")
+        sl.addWidget(self.search_box, 1)
+        sl.addWidget(self.search_count)
+        sl.addWidget(up)
+        sl.addWidget(down)
+        sl.addWidget(close)
+        self.search_bar.hide()
 
         self.view = ChatView()
         self.view.message_menu.connect(self.message_menu)
@@ -290,7 +511,10 @@ class ChatWidget(QWidget):
         self.input.escape.connect(self.cancel_reply)
         self.input.files_pasted.connect(self._send_paths)
 
-        self.btn_attach = QPushButton("📎")
+        from .theme import svg_icon as _svg
+        self.btn_attach = QPushButton()
+        self.btn_attach.setIcon(_svg("attach", "#54656F", rotate=45))
+        self.btn_attach.setIconSize(QSize(24, 24))
         self.btn_attach.setObjectName("Attach")
         self.btn_attach.setToolTip(tr("attach"))
         self.btn_attach.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -352,6 +576,7 @@ class ChatWidget(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(header)
+        lay.addWidget(self.search_bar)
         lay.addWidget(self.view, 1)
         lay.addWidget(bottom)
 
@@ -457,31 +682,28 @@ class ChatWidget(QWidget):
             if it.get("kind") == "sys":
                 emb = "\u202b" if lang() == "ar" else "\u202a"   # embed the line in the UI direction
                 parts.append(f'<p align="center" style="color:#475569;font-size:9pt;margin:6px">'
-                             f'<span style="color:#9CA3AF">{hhmm}</span>  ·  {emb}📎 {html.escape(it["text"])}\u202c</p>')
+                             f'<span style="color:#9CA3AF">{hhmm}</span>  ·  {emb}{html.escape(it["text"])}\u202c</p>')
                 continue
             mine = bool(it.get("outgoing"))
-            bg, fg, border, pt = self._bubble(mine)
+            bg, fg, _border, pt = self._bubble(mine)
             ex = it.get("extra") or {}
-            who = tr("me") if mine else html.escape(it.get("peer_name") or self.peer_name)
-            tick = ""
-            if mine:
-                st = it.get("status")
-                tick = (' <span style="color:#16A34A">✓</span>' if st == "delivered" else
-                        f' <span style="color:#B45309">⏳ {tr("queued")}</span>' if st == "queued" else
-                        f' <span style="color:#DC2626">✗ {tr("not_delivered")}</span>' if st == "failed" else
-                        ' <span style="color:#9CA3AF">…</span>')
-            multi = f' <span style="color:#7C3AED">[{tr("multi_tag")}]</span>' if it.get("multi") else ""
             mid = it.get("id", "")
+            head = ""
+            if not mine and self.is_group:      # like WhatsApp: names only in groups
+                who = html.escape(it.get("peer_name") or self.peer_name)
+                head = (f'<span style="color:{_name_color(it.get("peer_name") or "")};font-size:{pt - 1.5:.1f}pt">'
+                        f'<b>{who}</b></span><br>')
+            multi = (f'<span style="color:#7C3AED;font-size:{pt - 2.5:.1f}pt">[{tr("multi_tag")}]</span><br>'
+                     if it.get("multi") else "")
             fwd = (f'<span style="color:{fg["muted"]};font-size:{pt - 2.5:.1f}pt"><i>↪ {tr("forwarded")}</i></span><br>'
                    if ex.get("fwd") else "")
             parts.append(
-                f'<table align="{mine_side if mine else theirs_side}" cellspacing="0" cellpadding="9" '
-                f'style="background:{bg};margin:4px 10px;{border}">'
-                f'<tr><td><a name="m_{mid}"></a><span style="color:{fg["name"]};font-size:{pt - 2:.1f}pt"><b>{who}</b>{multi}</span>'
-                f'<span style="color:{fg["muted"]};font-size:{pt - 2.5:.1f}pt">  {self._star(ex)}{hhmm}</span>{tick}'
-                f'{self._menu_link(mid, fg["muted"])}<br>{fwd}{self._quote(ex.get("reply"), bg, pt)}'
+                f'<table align="{mine_side if mine else theirs_side}" cellspacing="0" cellpadding="7" '
+                f'style="background:{bg};margin:3px 16px">'
+                f'<tr><td><a name="m_{mid}">\u200b</a>{head}{multi}{fwd}{self._quote(ex.get("reply"), bg, pt)}'
                 f'<span style="font-size:{pt:.1f}pt;color:{fg["text"]}">{_render_text(it.get("text", ""))}</span>'
-                f'{self._reactions(ex, pt)}</td></tr></table><br clear="all">')
+                f'{self._footer(it, ex, hhmm, fg["muted"], pt)}{self._reactions(ex, pt)}</td></tr></table>'
+                f'<br clear="all">')
         sb = self.view.verticalScrollBar()
         old = sb.value()
         self.view.setHtml("".join(parts))
@@ -562,13 +784,18 @@ class ChatWidget(QWidget):
         if n == 1 and not d.get("is_dir") and os.path.splitext(title)[1].lower() in IMAGE_EXT:
             return self._image_card(it, d, tid, state, live, mine, hhmm, side, bg, who, line, a)
         ex = it.get("extra") or {}
-        return (f'<table align="{side}" cellspacing="0" cellpadding="10" '
-                f'style="background:{bg};margin:4px 10px;border:1px solid #D6E4DD">'
-                f'<tr><td><a name="m_{tid}"></a><span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span>'
-                f'<span style="color:#9CA3AF;font-size:8pt">  {self._star(ex)}{hhmm}</span>{self._menu_link(tid)}<br>'
+        head = (f'<span style="color:{_name_color(it.get("peer_name") or "")};font-size:8.5pt"><b>{who}</b></span><br>'
+                if (not mine and self.is_group) else "")
+        foot_item = dict(it, status="delivered" if state == "done" else "queued" if state in ("queued", "offered")
+                         else "failed" if state in ("failed", "canceled", "declined") else "")
+        return (f'<table align="{side}" cellspacing="0" cellpadding="9" '
+                f'style="background:{bg};margin:3px 16px">'
+                f'<tr><td><a name="m_{tid}">\u200b</a>{head}'
                 f'<span style="font-size:20pt">{icon}</span> <span style="font-size:10.5pt;color:#111827"><b>{emb}{name}\u202c</b></span>'
                 f'\u200f <span style="color:#6B7280;font-size:9pt">\u200f({size})\u200f</span>{thumb}<br>'
-                f'<span style="font-size:9.5pt">{line}</span>{self._reactions(ex, 10.5)}</td></tr></table><br clear="all">')
+                f'<span style="font-size:9.5pt">{line}</span>'
+                f'{self._footer(foot_item, ex, hhmm, "#8696A0", 10.5)}{self._reactions(ex, 10.5)}'
+                f'</td></tr></table><br clear="all">')
 
     def _image_card(self, it, d, tid, state, live, mine, hhmm, side, bg, who, line, a) -> str:
         """Picture message without a frame, sized like WhatsApp (max 330 px wide, 330 px tall)."""
@@ -578,14 +805,15 @@ class ChatWidget(QWidget):
             w, h = size
             scale = min(330 / max(1, w), 330 / max(1, h))
             w, h = max(60, int(w * scale)), max(60, int(h * scale))
-            pic = (f'<a href="tda:open:{tid}"><img src="{QUrl.fromLocalFile(src).toString()}" '
+            from urllib.parse import quote
+            pic = (f'<a href="tda:open:{tid}"><img src="tdaimg:round/{w}x{h}/{quote(src)}" '
                    f'width="{w}" height="{h}"></a>')
         else:   # not downloaded yet
             pic = (f'<table cellpadding="30" style="background:#DFE5E7"><tr><td align="center">'
                    f'<span style="font-size:30pt">🖼</span><br><span style="color:#64748B;font-size:9pt">'
                    f'{human_size(int(d.get("size", 0)))}</span></td></tr></table>')
         if state == "done":
-            status = '<span style="color:#16A34A">✓✓</span>' if mine else ""
+            status = tick_html(it.get("status") or "delivered") if mine else ""
         elif state in ("accepted", "active"):
             pct = int(100 * live.done / live.total) if (live and live.total) else 0
             status = f'<span style="color:{ACCENT}">{pct}%</span> {a("cancel", "✖", "#B91C1C")}'
@@ -594,7 +822,7 @@ class ChatWidget(QWidget):
         head = "" if mine or not self.is_group else f'<span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span><br>'
         ex = it.get("extra") or {}
         return (f'<table align="{side}" cellspacing="0" cellpadding="0" style="margin:6px 12px">'
-                f'<tr><td><a name="m_{tid}"></a>{head}{pic}</td></tr>'
+                f'<tr><td><a name="m_{tid}">\u200b</a>{head}{pic}</td></tr>'
                 f'<tr><td align="{"left" if side == "right" else "right"}">'
                 f'<span style="color:#667781;font-size:8pt">{self._star(ex)}{hhmm}</span> <span style="font-size:9pt">{status}</span>'
                 f'{self._menu_link(tid)}{self._reactions(ex, 10.5)}'
@@ -619,8 +847,17 @@ class ChatWidget(QWidget):
     @staticmethod
     def _menu_link(mid: str, color: str = "#8696A0") -> str:
         """The small ⌄ (like WhatsApp) that opens the message menu: react, reply, forward..."""
-        return (f' &nbsp;<a href="tda:menu:{mid}" style="color:{color};text-decoration:none;font-size:11pt">'
-                f'<b>⌄</b></a>')
+        return (f'<a href="tda:menu:{mid}" style="color:{color};text-decoration:none;font-size:10pt">'
+                f'⌄</a>&nbsp;')
+
+    def _footer(self, it, ex, hhmm, muted, pt) -> str:
+        """Bottom line of a bubble, at its end corner like WhatsApp:  ⌄  (edited) ★ 11:38 ✓✓"""
+        end = "left" if lang() == "ar" else "right"
+        edited = f'<i>{tr("edited")}</i> ' if ex.get("edited") else ""
+        tick = (" " + tick_html(it.get("status", ""))) if it.get("outgoing") else ""
+        return (f'<p align="{end}" style="margin-top:1px;margin-bottom:0px">'
+                f'<span style="color:{muted};font-size:{max(7.5, pt - 2.5):.1f}pt">'
+                f'{self._menu_link(it.get("id", ""), muted)} {edited}{self._star(ex)}{hhmm}</span>{tick}</p>')
 
     @staticmethod
     def _star(ex: dict) -> str:
@@ -721,6 +958,8 @@ class ChatWidget(QWidget):
         m.addSeparator()
         if self.can_write:
             m.addAction("↩  " + tr("reply"), lambda: self.start_reply(mid))
+        if it.get("outgoing") and it.get("kind") == "msg" and self.can_write:
+            m.addAction("✎  " + tr("edit"), lambda: self.start_edit(mid))
         m.addAction("⧉  " + tr("copy"), lambda: self.copy_message(mid))
         m.addAction("☺  " + tr("react"), lambda: self._emoji_grid(mid, mine_reaction))
         if it.get("kind") == "file":
@@ -797,8 +1036,26 @@ class ChatWidget(QWidget):
         self.reply_bar.show()
         self.input.setFocus()
 
-    def cancel_reply(self):
+    def start_edit(self, mid):
+        it = self.item(mid)
+        if not it:
+            return
         self.reply_to = None
+        self.editing = mid
+        self.reply_lbl.setText(f'<span style="color:#0E8F6F"><b>✎ {tr("editing")}</b></span><br>'
+                               f'<span style="color:#54656F">{html.escape((it.get("text") or "")[:120])}</span>')
+        self.reply_bar.show()
+        self.input.setPlainText(it.get("text") or "")
+        self.input.setFocus()
+        c = self.input.textCursor()
+        c.movePosition(c.MoveOperation.End)
+        self.input.setTextCursor(c)
+
+    def cancel_reply(self):
+        if getattr(self, "editing", None):
+            self.input.clear()
+        self.reply_to = None
+        self.editing = None
         self.reply_bar.hide()
 
     def take_reply(self):
@@ -818,10 +1075,55 @@ class ChatWidget(QWidget):
         self.items = [it for it in self.items if it.get("id") != mid]
         self.schedule_render()
 
+    # ------------------------------------------------------------------ search in this chat
+    def toggle_search(self):
+        show = not self.search_bar.isVisible()
+        self.search_bar.setVisible(show)
+        if show:
+            self.search_box.setFocus()
+            self.search_box.selectAll()
+        else:
+            self.search_box.clear()
+            self.search_count.clear()
+
+    def find_text(self, backward: bool, restart: bool = False):
+        from PySide6.QtGui import QTextDocument
+        q = self.search_box.text().strip()
+        if not q:
+            self.search_count.clear()
+            return
+        doc = self.view.document()
+        n, c = 0, doc.find(q)
+        while not c.isNull() and n < 999:
+            n += 1
+            c = doc.find(q, c)
+        self.search_count.setText(str(n) if n else "0")
+        if restart:     # newest match first (bottom of the chat)
+            cur = self.view.textCursor()
+            cur.movePosition(cur.MoveOperation.End)
+            self.view.setTextCursor(cur)
+            backward = True
+        self._stick = False
+        flags = QTextDocument.FindFlag.FindBackward if backward else QTextDocument.FindFlag(0)
+        if not self.view.find(q, flags):
+            cur = self.view.textCursor()     # wrap around
+            cur.movePosition(cur.MoveOperation.End if backward else cur.MoveOperation.Start)
+            self.view.setTextCursor(cur)
+            self.view.find(q, flags)
+
     # ------------------------------------------------------------------ actions
     def _submit(self):
         text = self.input.toPlainText().strip()
         if not text:
+            return
+        if getattr(self, "editing", None):
+            mid = self.editing
+            self.editing = None
+            self.input.clear()
+            self.cancel_reply()
+            it = self.item(mid)
+            if it and text != it.get("text"):
+                self.message_action.emit("edit", mid, text)
             return
         self.input.clear()
         self.send_text.emit(self.peer_id, text)

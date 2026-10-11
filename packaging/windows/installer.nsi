@@ -5,7 +5,7 @@ Unicode true
 !include "Sections.nsh"
 
 !define APPNAME "TDA"
-!define VERSION "1.6.0"
+!define VERSION "1.7.0"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\TDA"
 
 Name "${APPNAME}"
@@ -39,7 +39,7 @@ LangString SecDesktop ${LANG_ENGLISH} "Desktop shortcut"
 LangString SecStartup ${LANG_ARABIC} "التشغيل مع بدء Windows"
 LangString SecStartup ${LANG_ENGLISH} "Start with Windows"
 
-VIProductVersion "1.6.0.0"
+VIProductVersion "1.7.0.0"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "TDA"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "TDA LAN Messenger Setup"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "${VERSION}"

@@ -252,6 +252,23 @@ ca.resize(900, 640); ca.show(); pump(0.4)
 ca.grab().save(str(out / f"screen_{lang}_reactions.png"))
 print("reply / reactions / menu ok", len(found))
 
+# --- ⋮ chat menu, favourites, disappearing messages, ☰ main menu
+cm = a.build_chat_menu(bid)
+cm.adjustSize(); cm.show(); pump(0.3)
+cm.grab().save(str(out / f"screen_{lang}_chat_menu.png"))
+cm.close()
+a._toggle_fav(bid)
+a.set_disappearing(bid, 7 * 86400, notify=True)
+pump(1.5)
+assert b.s.disappear.get(a.s.user_id) == 7 * 86400, b.s.disappear
+a.set_disappearing(bid, 0, notify=True)
+pump(1.0)
+assert not b.s.disappear.get(a.s.user_id)
+a.main_menu.adjustSize(); a.main_menu.show(); pump(0.3)
+a.main_menu.grab().save(str(out / f"screen_{lang}_main_menu.png"))
+a.main_menu.close()
+print("chat menu / favourites / disappearing ok")
+
 # --- group administration: B made admin, Khaled frozen from writing
 kid = wins[2].s.user_id
 a.core.update_group(gid, admins_add=[bid])

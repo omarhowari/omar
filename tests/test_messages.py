@@ -49,6 +49,18 @@ def main():
     a.delete_message(bid, m1)
     assert wait(lambda: deleted == [(aid, m1)])
     print("delete for everyone ok")
+    # read receipts, edit, disappearing-messages setting
+    reads, edits, sets = [], [], []
+    a.message_read.connect(lambda r, ids, g: reads.append((r, ids, g)))
+    b.message_edited.connect(edits.append)
+    b.chat_setting.connect(lambda snd, g, st: sets.append((snd, g, st)))
+    b.send_read(aid, [m1])
+    assert wait(lambda: reads == [(bid, [m1], "")])
+    a.edit_message(bid, m1, "نص بعد التعديل")
+    assert wait(lambda: edits and edits[0]["text"] == "نص بعد التعديل" and edits[0]["from"] == aid)
+    a.send_chat_setting(bid, 86400)
+    assert wait(lambda: sets == [(aid, "", {"disappear": 86400})])
+    print("read receipts / edit / disappearing setting ok")
     # group: member deletes own message; reactions in a group reach everybody
     gid = a.create_group("فريق", {bid: "Bana"})
     assert wait(lambda: gid in b.groups)

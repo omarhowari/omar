@@ -68,6 +68,11 @@ def main() -> int:
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft if settings.language == "ar" else Qt.LayoutDirection.LeftToRight)
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
+    # Arabic / English texts for Qt's own buttons (Yes / No / Cancel ...)
+    from PySide6.QtCore import QLibraryInfo, QTranslator
+    qt_tr = QTranslator(app)
+    if qt_tr.load(f"qtbase_{settings.language}", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        app.installTranslator(qt_tr)
 
     history = History()
     if not settings.setup_done:          # first start: ask for name and department

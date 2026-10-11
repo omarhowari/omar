@@ -72,6 +72,10 @@ class Settings:
     theme_version: int = 0                  # version of the administrator's published appearance
     theme_lock: bool = False                # the administrator locked the appearance
     theme_pin: str = ""                     # public key of the administrator (trusted on first use)
+    favorites: list = field(default_factory=list)      # chat keys pinned at the top of the list
+    muted: dict = field(default_factory=dict)          # chat key -> muted until (epoch s, -1 = always)
+    blocked: list = field(default_factory=list)        # user ids whose messages/files/calls are refused
+    disappear: dict = field(default_factory=dict)      # chat key -> seconds after which messages vanish
     update_auto: bool = True                # tell me when a colleague has a newer TDA
 
     @classmethod

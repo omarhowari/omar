@@ -33,7 +33,7 @@ from .theme import app_icon, draw_avatar, draw_logo, status_icon
 STATUSES = ("available", "away", "busy")
 OFFLINE_GROUP = "\x00offline"
 GROUPS_HEAD = "\x00groups"
-STATUS_RANK = {"": 0, "failed": 1, "queued": 2, "delivered": 3}
+STATUS_RANK = {"": 0, "failed": 1, "queued": 2, "delivered": 3, "read": 4}
 
 
 def is_group_key(key: str) -> bool:
@@ -131,6 +131,13 @@ class MainWindow(QMainWindow):
         core.group_message_deleted.connect(self.on_group_message_deleted)
         core.message_deleted.connect(self.on_peer_message_deleted)
         core.reaction.connect(self.on_reaction)
+        core.message_read.connect(self.on_message_read)
+        core.chat_setting.connect(self.on_chat_setting)
+        self._purge_timer = QTimer(self, interval=60_000)
+        self._purge_timer.timeout.connect(self.purge_disappearing)
+        self._purge_timer.start()
+        QTimer.singleShot(3000, self.purge_disappearing)
+        core.message_edited.connect(self.on_message_edited)
         core.update_available.connect(self.on_update_available)
         core.update_progress.connect(self.on_update_progress)
         core.update_ready.connect(self.on_update_ready)
@@ -154,24 +161,20 @@ class MainWindow(QMainWindow):
 
     # ======================================================================= build
     def _build_toolbar(self):
-        tb = QToolBar(movable=False)
-        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.addToolBar(tb)
-
-        def act(symbol, text, slot):
-            a = QAction(f"{symbol}  {text}", self)
-            a.triggered.connect(slot)
-            tb.addAction(a)
-            return a
-
-        act("📢", tr("broadcast"), lambda: self.broadcast())
-        act("👥", tr("new_group"), self.new_group)
-        act("📎", tr("send_file"), self.send_file_to_selected)
-        act("⇅", tr("transfers"), self.show_transfers)
-        act("🔍", tr("history_search"), self.search_history)
-        tb.addSeparator()
-        act("⚙", tr("settings"), self.open_settings)
-        act("ℹ", tr("about"), self.about)
+        """No top bar: the commands live in a ☰ menu on the user card (like WhatsApp's menu)."""
+        self.main_menu = m = QMenu(self)
+        m.setStyleSheet("QMenu{background:white;border:1px solid #E5E7EB;border-radius:10px;padding:6px}"
+                        "QMenu::item{padding:9px 28px;border-radius:6px;font-size:10.5pt}"
+                        "QMenu::item:selected{background:#F0F2F5}QMenu::separator{height:1px;background:#E5E7EB;"
+                        "margin:5px 8px}")
+        m.addAction("📢  " + tr("broadcast"), lambda: self.broadcast())
+        m.addAction("👥  " + tr("new_group"), self.new_group)
+        m.addAction("📎  " + tr("send_file"), self.send_file_to_selected)
+        m.addAction("⇅  " + tr("transfers"), self.show_transfers)
+        m.addAction("🔍  " + tr("history_search"), self.search_history)
+        m.addSeparator()
+        m.addAction("⚙  " + tr("settings"), self.open_settings)
+        m.addAction("ℹ  " + tr("about"), self.about)
 
     def _build_body(self):
         side = QFrame(objectName="SidePanel")
@@ -190,6 +193,18 @@ class MainWindow(QMainWindow):
         nl.addWidget(self.me_group)
         cl.addWidget(self.avatar)
         cl.addLayout(nl, 1)
+        from .theme import svg_icon
+        self.menu_btn = QPushButton(objectName="MenuBtn")
+        self.menu_btn.setIcon(svg_icon("menu", "#FFFFFF"))
+        self.menu_btn.setIconSize(QSize(24, 24))
+        self.menu_btn.setFixedSize(38, 38)
+        self.menu_btn.setToolTip(tr("settings"))
+        self.menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.menu_btn.setStyleSheet("QPushButton#MenuBtn{border:none;border-radius:19px;background:transparent}"
+                                    "QPushButton#MenuBtn:hover{background:rgba(255,255,255,0.18)}")
+        self.menu_btn.clicked.connect(lambda: self.main_menu.exec(
+            self.menu_btn.mapToGlobal(self.menu_btn.rect().bottomLeft())))
+        cl.addWidget(self.menu_btn, 0, Qt.AlignmentFlag.AlignTop)
         sl.addWidget(card)
 
         self.status_box = QComboBox()
@@ -213,6 +228,7 @@ class MainWindow(QMainWindow):
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
         self.tree.itemActivated.connect(self._tree_open)
+        self.tree.itemClicked.connect(self._tree_click)
         self.tree.itemDoubleClicked.connect(self._tree_open)
         sl.addWidget(self.tree, 1)
 
@@ -349,7 +365,41 @@ class MainWindow(QMainWindow):
                     for i in range(self.tree.topLevelItemCount()) if not self.tree.topLevelItem(i).isExpanded()}
         selected = {it.data(0, Qt.ItemDataRole.UserRole) for it in self.tree.selectedItems()}
         self.tree.clear()
-        # --- chat groups first
+        # --- favourites first
+        favs = []
+        for key in self.s.favorites:
+            if is_group_key(key):
+                g = self.core.groups.get(key[2:])
+                if g:
+                    online = any(m in self.core.peers for m in g["members"])
+                    favs.append((key, "👥 " + g["name"], "available" if online else "offline"))
+            else:
+                p = self.core.peers.get(key)
+                name = p.name if p else self.known.get(key, {}).get("name")
+                if name:
+                    favs.append((key, name, p.status if p else "offline"))
+        favs = [f for f in favs if not q or q in f[1].lower()]
+        if favs:
+            head = QTreeWidgetItem([f"⭐ {tr('favorites')}  ({len(favs)})"])
+            head.setData(0, Qt.ItemDataRole.UserRole + 1, "\x00fav")
+            head.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            f = head.font(0)
+            f.setBold(True)
+            head.setFont(0, f)
+            head.setForeground(0, Qt.GlobalColor.darkGray)
+            self.tree.addTopLevelItem(head)
+            for key, name, st in favs:
+                n = self.unread.get(key, 0)
+                it = QTreeWidgetItem([f"{name}  ({n})" if n else name])
+                it.setIcon(0, status_icon(st))
+                it.setData(0, Qt.ItemDataRole.UserRole, key)
+                if n:
+                    fb = it.font(0)
+                    fb.setBold(True)
+                    it.setFont(0, fb)
+                head.addChild(it)
+            head.setExpanded("\x00fav" not in expanded)
+        # --- chat groups
         grp_items = [(gid, g) for gid, g in self.core.groups.items() if not q or q in g["name"].lower()]
         if grp_items:
             head = QTreeWidgetItem([f"👥 {tr('groups')}  ({len(grp_items)})"])
@@ -418,6 +468,12 @@ class MainWindow(QMainWindow):
         ids = [it.data(0, Qt.ItemDataRole.UserRole) for it in self.tree.selectedItems()]
         return [i for i in ids if i and not is_group_key(i) and (not online_only or i in self.core.peers)]
 
+    def _tree_click(self, item, _col=0):
+        """One click opens the chat (Ctrl/Shift+click still selects several users for a broadcast)."""
+        if QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            return
+        self._tree_open(item)
+
     def _tree_open(self, item, _col=0):
         pid = item.data(0, Qt.ItemDataRole.UserRole)
         if pid:
@@ -469,6 +525,7 @@ class MainWindow(QMainWindow):
             chat.start_call.connect(self.start_call)
             chat.transfer_action.connect(self.transfer_action)
             chat.my_id = self.s.user_id
+            chat.header_menu.connect(self.chat_menu)
             chat.message_action.connect(lambda a, m, x, k=pid: self.on_message_action(k, a, m, x))
             chat.transfer_lookup = self.core.transfers.get
             chat.load(self.history.load(pid))
@@ -506,6 +563,9 @@ class MainWindow(QMainWindow):
         st = p.status if p else "offline"
         name = p.name if p else chat.peer_name
         chat.set_peer(name, st, self._peer_info(p) if p else "")
+        blocked = pid in self.s.blocked
+        if blocked or not chat.can_write:
+            chat.set_permissions(not blocked, not blocked, tr("blocked_note") if blocked else "")
         i = self.tabs.indexOf(chat)
         n = self.unread.get(pid, 0)
         self.tabs.setTabText(i, f"{name} ({n})" if n else name)
@@ -528,6 +588,72 @@ class MainWindow(QMainWindow):
         if self.unread.pop(pid, None):
             self._update_chat_peer(pid)
             self.schedule_tree()
+        self._send_reads(pid)
+
+    def _send_reads(self, pid):
+        """The chat is on screen: blue ticks for the messages its senders sent me."""
+        chat = self.chats.get(pid)
+        if chat is None:
+            return
+        by_sender: dict = {}
+        for it in chat.items:
+            if it.get("outgoing") or it.get("kind") not in ("msg", "file"):
+                continue
+            ex = it.get("extra") or {}
+            if ex.get("rs"):
+                continue
+            sender = ex.get("sender") or ("" if is_group_key(pid) else pid)
+            ex = dict(ex, rs=True)
+            it["extra"] = ex
+            self.history.set_extra(it["id"], ex)
+            if sender:
+                by_sender.setdefault(sender, []).append(it["id"])
+        gid = pid[2:] if is_group_key(pid) else ""
+        for sender, ids in by_sender.items():
+            self.core.send_read(sender, ids[-200:], gid)
+
+    def on_message_read(self, reader, ids, gid):
+        key = "g:" + gid if gid else reader
+        chat = self.chats.get(key)
+        members = len(self.core.groups.get(gid, {}).get("members", {})) if gid else 2
+        changed = False
+        for mid in ids:
+            row = self.history.get(mid)
+            if not row or row["peer_id"] != key or not row["outgoing"]:
+                continue
+            status = "read"
+            if gid:       # blue only when every member has read it (like WhatsApp)
+                ex = self.history.get_extra(mid)
+                readers = sorted(set(ex.get("readers", [])) | {reader})
+                ex["readers"] = readers
+                self.history.set_extra(mid, ex)
+                if len(readers) < members - 1:
+                    status = "delivered"
+            self.history.set_status(mid, status)
+            for it in (chat.items if chat else []):
+                if it.get("id") == mid and STATUS_RANK.get(status, 0) >= STATUS_RANK.get(it.get("status", ""), 0):
+                    it["status"] = status
+                    changed = True
+        if changed:
+            chat.schedule_render()
+
+    def on_message_edited(self, e):
+        key = "g:" + e["gid"] if e["gid"] else e["from"]
+        mid = e["msg_id"]
+        row = self.history.get(mid)
+        if not row or row["peer_id"] != key or row["outgoing"] or row["kind"] != "msg":
+            return
+        ex = self.history.get_extra(mid)
+        if e["gid"] and ex.get("sender") != e["from"]:
+            return
+        ex["edited"] = True
+        self.history.set_text(mid, e["text"])
+        self.history.set_extra(mid, ex)
+        chat = self.chats.get(key)
+        it = chat.item(mid) if chat else None
+        if it:
+            it["text"], it["extra"] = e["text"], ex
+            chat.schedule_render()
 
     def clear_history(self, pid):
         self.history.clear(pid)
@@ -557,7 +683,7 @@ class MainWindow(QMainWindow):
                 t = self.core.transfers[tids[0]]
                 title = t.title if not t.title.isdigit() else tr("files_n", n=t.title)
                 self.open_chat(pid)
-                self._sys_line(pid, tr("group_sent_files", title=title, size=human_size(t.total)))
+                self._sys_line(pid, "📎 " + tr("group_sent_files", title=title, size=human_size(t.total)))
             return
         self.open_chat(pid)
         # works for offline users too: the offer waits in the outbox until they connect
@@ -648,6 +774,246 @@ class MainWindow(QMainWindow):
                     it["kind"], it["extra"] = "deleted", {}
             chat.schedule_render()
 
+    # ======================================================================= ⋮ chat menu (WhatsApp style)
+    def chat_menu(self, key, gpos):
+        m = self.build_chat_menu(key)
+        if m is not None:
+            m.exec(gpos)
+
+    def build_chat_menu(self, key):
+        chat = self.chats.get(key)
+        if chat is None:
+            return None
+        group = is_group_key(key)
+        m = QMenu(self)
+        m.setStyleSheet("QMenu{background:white;border:1px solid #E5E7EB;border-radius:10px;padding:6px}"
+                        "QMenu::item{padding:9px 28px;border-radius:6px;font-size:10.5pt}"
+                        "QMenu::item:selected{background:#F0F2F5}QMenu::separator{height:1px;background:#E5E7EB;"
+                        "margin:5px 8px}")
+        if group:
+            m.addAction("ⓘ  " + tr("group_info_menu"), lambda: self.manage_group(key))
+        else:
+            m.addAction("ⓘ  " + tr("contact_info"), lambda: self.contact_info(key))
+        m.addAction("🔍  " + tr("search"), chat.toggle_search)
+        m.addAction("☑  " + tr("select_messages"), lambda: self.select_messages(key))
+        mute = m.addMenu("🔕  " + tr("mute"))
+        if self.is_muted(key):
+            mute.addAction(tr("unmute"), lambda: self._set_mute(key, None))
+            mute.addSeparator()
+        for label, secs in ((tr("mute_8h"), 8 * 3600), (tr("mute_week"), 7 * 86400), (tr("mute_always"), -1)):
+            mute.addAction(label, lambda x=secs: self._set_mute(key, x))
+        dis = m.addMenu("⏱  " + tr("disappearing"))
+        cur = int(self.s.disappear.get(key, 0))
+        for label, secs in self.DISAPPEAR:
+            a = dis.addAction(label, lambda x=secs: self.set_disappearing(key, x, notify=True))
+            a.setCheckable(True)
+            a.setChecked(cur == secs)
+        m.addAction("🎨  " + tr("chat_theme"), self.open_settings)
+        fav = key in self.s.favorites
+        m.addAction(("💔  " + tr("fav_remove")) if fav else ("♡  " + tr("fav_add")), lambda: self._toggle_fav(key))
+        m.addAction("⤓  " + tr("export_chat"), lambda: self.export_chat(key))
+        m.addAction("⊗  " + tr("close_chat"), lambda: self._close_tab(self.tabs.indexOf(chat)))
+        if not group:
+            m.addSeparator()
+            a = m.addAction("📞  " + tr("voice_call"), lambda: self.start_call(key))
+            a.setEnabled(key in self.core.peers and key not in self.s.blocked)
+        m.addSeparator()
+        if not group:
+            blocked = key in self.s.blocked
+            m.addAction(("✓  " + tr("unblock")) if blocked else ("⊘  " + tr("block")), lambda: self._toggle_block(key))
+        m.addAction("⊖  " + tr("clear_chat"), lambda: self._confirm(tr("clear_chat_confirm"), lambda: self.clear_history(key)))
+        if group:
+            m.addAction("🚪  " + tr("group_leave"), lambda: self.manage_group(key))
+        else:
+            m.addAction("🗑  " + tr("delete_chat"), lambda: self._confirm(tr("delete_chat_confirm"),
+                                                                      lambda: self.delete_chat(key)))
+        return m
+
+    @property
+    def DISAPPEAR(self):
+        return ((tr("disappear_off"), 0), (tr("disappear_24h"), 86400), (tr("disappear_7d"), 7 * 86400),
+                (tr("disappear_90d"), 90 * 86400))
+
+    def _confirm(self, text, fn):
+        if QMessageBox.question(self, APP_NAME, text) == QMessageBox.StandardButton.Yes:
+            fn()
+
+    def contact_info(self, pid):
+        p = self.core.peers.get(pid)
+        c = self.known.get(pid, {})
+        if p:
+            text = (f"{tr('user')}: {p.name}\n{tr('group')}: {p.group}\n{tr('status_' + p.status)}\n"
+                    f"{tr('computer')}: {p.hostname}\n{tr('address')}: {p.host}\n{tr('system')}: {p.os}\nTDA {p.version}")
+        else:
+            text = f"{tr('user')}: {c.get('name', '?')}\n{tr('group')}: {c.get('group', '')}\n{tr('status_offline')}"
+        QMessageBox.information(self, tr("contact_info"), text)
+
+    def _set_mute(self, key, secs):
+        if secs is None:
+            self.s.muted.pop(key, None)
+        else:
+            self.s.muted[key] = -1 if secs == -1 else time.time() + secs
+        self.s.save()
+
+    def _toggle_fav(self, key):
+        if key in self.s.favorites:
+            self.s.favorites.remove(key)
+        else:
+            self.s.favorites.append(key)
+        self.s.save()
+        self.schedule_tree()
+
+    def _toggle_block(self, pid):
+        if pid in self.s.blocked:
+            self.s.blocked.remove(pid)
+        else:
+            name = self.chats[pid].peer_name if pid in self.chats else pid
+            if QMessageBox.question(self, APP_NAME, tr("block_confirm", name=name)) != QMessageBox.StandardButton.Yes:
+                return
+            self.s.blocked.append(pid)
+        self.s.save()
+        chat = self.chats.get(pid)
+        if chat:
+            chat.set_permissions(pid not in self.s.blocked, pid not in self.s.blocked,
+                                 tr("blocked_note") if pid in self.s.blocked else "")
+            self._update_chat_peer(pid)
+
+    def set_disappearing(self, key, secs, notify=False, by_name=None):
+        if secs:
+            self.s.disappear[key] = int(secs)
+        else:
+            self.s.disappear.pop(key, None)
+        self.s.save()
+        label = dict((s_, l_) for l_, s_ in self.DISAPPEAR).get(int(secs), str(secs))
+        text = tr("disappear_set", v=label) + (f"  ({by_name})" if by_name else "")
+        self._sys_line(key, text)
+        if notify:
+            self.core.send_chat_setting(key, int(secs))
+        self.purge_disappearing()
+
+    def on_chat_setting(self, sender, gid, setting):
+        key = "g:" + gid if gid else sender
+        if sender in self.s.blocked and not gid:
+            return
+        name = self.core.peers[sender].name if sender in self.core.peers else self.known.get(sender, {}).get("name", "")
+        self.open_chat(key, focus=False)
+        self.set_disappearing(key, setting.get("disappear", 0), notify=False, by_name=name)
+
+    def purge_disappearing(self):
+        now = time.time()
+        for key, secs in list(self.s.disappear.items()):
+            if not secs:
+                continue
+            if self.history.purge(key, now - secs):
+                chat = self.chats.get(key)
+                if chat:
+                    chat.load(self.history.load(key))
+
+    def export_chat(self, key):
+        from PySide6.QtWidgets import QFileDialog
+        chat = self.chats.get(key)
+        name = chat.peer_name if chat else key
+        safe = "".join(ch for ch in name if ch not in '\\/:*?"<>|').strip() or "chat"
+        path, _ = QFileDialog.getSaveFileName(self, tr("export_chat"),
+                                              os.path.join(os.path.expanduser("~"), f"TDA - {safe}.txt"),
+                                              "Text (*.txt)")
+        if not path:
+            return
+        from datetime import datetime
+        lines = []
+        for it in self.history.load(key, limit=1_000_000):
+            ts = datetime.fromtimestamp(it["ts"]).strftime("%Y-%m-%d %H:%M")
+            who = self.s.name if it["outgoing"] else (it["peer_name"] or "")
+            if it["kind"] == "msg":
+                text = it["text"]
+            elif it["kind"] == "file":
+                try:
+                    text = "📎 " + json.loads(it["text"] or "{}").get("title", "")
+                except ValueError:
+                    text = "📎"
+            elif it["kind"] == "deleted":
+                text = tr("msg_deleted")
+            else:
+                continue
+            lines.append(f"[{ts}] {who}: {text}")
+        with open(path, "w", encoding="utf-8-sig") as f:
+            f.write("\n".join(lines))
+        QMessageBox.information(self, APP_NAME, tr("export_done", path=path))
+
+    def delete_chat(self, key):
+        self.clear_history(key)
+        chat = self.chats.get(key)
+        if chat:
+            self._close_tab(self.tabs.indexOf(chat))
+        if key in self.s.favorites:
+            self.s.favorites.remove(key)
+            self.s.save()
+        if not is_group_key(key) and key not in self.core.peers:
+            self.known.pop(key, None)
+            self.history.forget_contact(key)
+        self.unread.pop(key, None)
+        self.schedule_tree()
+
+    def select_messages(self, key):
+        """Pick several messages: copy, forward or delete them together."""
+        from PySide6.QtWidgets import QApplication as _QA, QDialog, QListWidget, QListWidgetItem, QVBoxLayout
+        from datetime import datetime
+        chat = self.chats.get(key)
+        if chat is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("select_messages"))
+        dlg.resize(520, 560)
+        lst = QListWidget()
+        items = [it for it in chat.items if it.get("kind") in ("msg", "file")]
+        for it in items:
+            who = tr("me") if it.get("outgoing") else (it.get("peer_name") or chat.peer_name)
+            ts = datetime.fromtimestamp(it.get("ts") or 0).strftime("%H:%M")
+            x = QListWidgetItem(f"{ts}  {who}:  {chat.snippet(it)[:90]}")
+            x.setData(Qt.ItemDataRole.UserRole, it["id"])
+            x.setCheckState(Qt.CheckState.Unchecked)
+            lst.addItem(x)
+        lst.scrollToBottom()
+        count = QLabel(tr("selected_n", n=0))
+        lst.itemChanged.connect(lambda _x: count.setText(tr("selected_n", n=len(chosen()))))
+
+        def chosen():
+            return [lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())
+                    if lst.item(i).checkState() == Qt.CheckState.Checked]
+
+        def do_copy():
+            texts = [chat.snippet(chat.item(mid)) for mid in chosen() if chat.item(mid)]
+            _QA.clipboard().setText("\n".join(texts))
+            dlg.accept()
+
+        def do_forward():
+            ids = chosen()
+            dlg.accept()
+            for mid in ids:
+                it = chat.item(mid)
+                if it:
+                    self.forward(chat, it)
+                    break       # one target choice for the first; keeps the flow simple
+
+        def do_delete():
+            ids = chosen()
+            if ids and QMessageBox.question(dlg, APP_NAME, tr("delete_me_confirm")) == QMessageBox.StandardButton.Yes:
+                for mid in ids:
+                    self.history.delete(mid)
+                    chat.remove_item(mid)
+                dlg.accept()
+
+        row = QHBoxLayout()
+        for label, fn in ((tr("copy"), do_copy), (tr("forward"), do_forward), (tr("delete_me"), do_delete)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        v = QVBoxLayout(dlg)
+        v.addWidget(count)
+        v.addWidget(lst, 1)
+        v.addLayout(row)
+        dlg.exec()
+
     # ======================================================================= message menu actions
     def on_message_action(self, key, action, mid, arg):
         chat = self.chats.get(key)
@@ -665,6 +1031,13 @@ class MainWindow(QMainWindow):
             self.history.set_extra(mid, ex)
             chat.update_extra(mid, ex)
             self.core.react(key, mid, arg)
+        elif action == "edit":
+            ex = dict(it.get("extra") or {}, edited=True)
+            it["text"], it["extra"] = arg, ex
+            self.history.set_text(mid, arg)
+            self.history.set_extra(mid, ex)
+            chat.schedule_render()
+            self.core.edit_message(key, mid, arg)
         elif action == "star":
             ex = dict(it.get("extra") or {})
             ex["star"] = arg == "1"
@@ -776,7 +1149,7 @@ class MainWindow(QMainWindow):
         if r["emoji"] and row["outgoing"]:
             visible = chat is not None and self.isActiveWindow() and self.tabs.currentWidget() is chat
             if not visible:
-                self._alert(APP_NAME, tr("reacted", name=r["from_name"], e=r["emoji"]))
+                self._alert(APP_NAME, tr("reacted", name=r["from_name"], e=r["emoji"]), key=key)
 
     def on_group_updated(self, gid):
         self._update_chat_peer("g:" + gid)
@@ -791,6 +1164,8 @@ class MainWindow(QMainWindow):
 
     def on_message(self, m: dict):
         sender = m["from"]
+        if sender in self.s.blocked and not m.get("gid"):
+            return
         if sender not in self.known:
             self.known[sender] = {"id": sender, "name": m["from_name"], "group": ""}
         pid = "g:" + m["gid"] if m.get("gid") else sender
@@ -808,7 +1183,9 @@ class MainWindow(QMainWindow):
             self.unread[pid] = self.unread.get(pid, 0) + 1
             self._update_chat_peer(pid)
             self.schedule_tree()
-            self._alert(tr("new_message_from", name=m["from_name"]), m["text"][:200])
+            self._alert(tr("new_message_from", name=m["from_name"]), m["text"][:200], key=pid)
+        else:
+            self._send_reads(pid)
 
     def on_message_status(self, mid, status, _peer):
         # group messages report once per member: keep the best state reached so far
@@ -842,6 +1219,9 @@ class MainWindow(QMainWindow):
     def on_transfer_added(self, tid):
         t = self.core.transfers[tid]
         if t.purpose or (t.gid and t.direction == "out"):
+            return
+        if t.direction == "in" and not t.gid and t.peer_id in self.s.blocked:
+            self.core.reject_transfer(tid)
             return          # one summary line in the group chat instead of a card per member
         ts = time.time()
         key = self._transfer_key(t)
@@ -861,7 +1241,7 @@ class MainWindow(QMainWindow):
                 self.unread[key] = self.unread.get(key, 0) + 1
                 self._update_chat_peer(key)
                 self.schedule_tree()
-            self._alert(tr("transfers"), msg)
+            self._alert(tr("transfers"), msg, key=key)
 
     def on_transfer_changed(self, tid):
         t = self.core.transfers.get(tid)
@@ -919,6 +1299,9 @@ class MainWindow(QMainWindow):
             self.call_win.refresh()
 
     def on_incoming_call(self, pid, name):
+        if pid in self.s.blocked:
+            self.calls.reject()
+            return
         self.call_win.refresh()
         QApplication.alert(self, 0)
         if self.s.notify and self.tray.isVisible():
@@ -938,8 +1321,17 @@ class MainWindow(QMainWindow):
             self.schedule_tree()
             self._alert(tr("call_log_missed"), name)
 
-    def _alert(self, title, body):
-        if self.s.status == "busy":
+    def is_muted(self, key) -> bool:
+        until = self.s.muted.get(key)
+        if until is None:
+            return False
+        if until == -1 or until > time.time():
+            return True
+        self.s.muted.pop(key, None)
+        return False
+
+    def _alert(self, title, body, key=None):
+        if self.s.status == "busy" or (key and self.is_muted(key)):
             return
         QApplication.alert(self, 0)
         if self.s.notify and self.tray.isVisible():

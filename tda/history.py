@@ -79,6 +79,16 @@ class History:
             out.append(d)
         return out
 
+    def purge(self, peer_id, before_ts) -> int:
+        """Disappearing messages: remove this chat's messages older than before_ts."""
+        n = self.db.execute("DELETE FROM messages WHERE peer_id=? AND ts<?", (peer_id, before_ts)).rowcount
+        self.db.commit()
+        return n
+
+    def forget_contact(self, peer_id):
+        self.db.execute("DELETE FROM contacts WHERE peer_id=?", (peer_id,))
+        self.db.commit()
+
     def clear(self, peer_id):
         self.db.execute("DELETE FROM messages WHERE peer_id=?", (peer_id,))
         self.db.commit()

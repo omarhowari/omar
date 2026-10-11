@@ -140,7 +140,7 @@ QToolBar {{ background: white; border: none; border-bottom: 1px solid #E5E7EB; p
 QToolBar QToolButton {{ padding: 6px 10px; border-radius: 6px; color: #1F2937; }}
 QToolBar QToolButton:hover {{ background: {ACCENT_SOFT}; }}
 #SidePanel {{ background: white; }}
-#MeCard {{ background: {ACCENT}; border-radius: 10px; border-bottom: 3px solid {GOLD}; }}
+#MeCard {{ background: #428177; border-radius: 10px; border-bottom: 3px solid {GOLD}; }}
 #MeCard QLabel {{ color: white; }}
 #MeName {{ font-size: 12pt; font-weight: 600; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {{
@@ -218,6 +218,31 @@ def send_icon(rtl: bool) -> QIcon:
         pts = [QPointF(48 - q.x(), q.y()) for q in pts]
     p.drawPolygon(QPolygonF(pts))
     p.end()
+    return QIcon(pm)
+
+
+# Material-style line icons (drawn from SVG paths, so they look the same on every Windows)
+ICON_PATHS = {
+    "menu": "M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z",
+    "attach": "M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5"
+              "c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4"
+              "S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z",
+    "more": "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"
+            "m0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z",
+    "search": "M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57"
+              "l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z",
+    "call": "M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 0 0-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83"
+            "l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99"
+            " 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z",
+}
+
+
+def svg_icon(name: str, color: str = "#54656F", size: int = 24, rotate: int = 0) -> QIcon:
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size * 3}" height="{size * 3}" viewBox="0 0 24 24">'
+           f'<g transform="rotate({rotate} 12 12)"><path fill="{color}" d="{ICON_PATHS[name]}"/></g></svg>')
+    pm = QPixmap()
+    if not pm.loadFromData(svg.encode(), "SVG"):
+        return QIcon()
     return QIcon(pm)
 
 
