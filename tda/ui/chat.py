@@ -72,6 +72,9 @@ class ChatView(QTextBrowser):
         self._tile = True
         self._opacity = 1.0
         self.viewport().setAutoFillBackground(False)
+        # no horizontal bar: everything wraps to the window width (like WhatsApp)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
 
     def set_background(self, mode: str, image: str = "", opacity: int = 100):
         """mode: "pattern" | "image" | "none"."""

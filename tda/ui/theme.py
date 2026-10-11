@@ -165,6 +165,11 @@ QPushButton#Attach {{ font-size: 16pt; background: transparent; border: none; bo
 QPushButton#Attach:hover {{ background: #F0F2F5; }}
 QPushButton#Attach::menu-indicator {{ image: none; width: 0; }}
 QPushButton#Attach:disabled {{ color: #CBD5E1; }}
+QTextBrowser#ChatView QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
+QTextBrowser#ChatView QScrollBar::handle:vertical {{ background: rgba(0,0,0,0.25); border-radius: 4px; min-height: 30px; }}
+QTextBrowser#ChatView QScrollBar::handle:vertical:hover {{ background: rgba(0,0,0,0.4); }}
+QTextBrowser#ChatView QScrollBar::add-line:vertical, QTextBrowser#ChatView QScrollBar::sub-line:vertical {{ height: 0; }}
+QTextBrowser#ChatView QScrollBar::add-page:vertical, QTextBrowser#ChatView QScrollBar::sub-page:vertical {{ background: none; }}
 QMenu {{ background: white; border: 1px solid #D1D5DB; padding: 4px; }}
 QMenu::item {{ padding: 8px 22px; border-radius: 6px; font-size: 10.5pt; }}
 QMenu::item:selected {{ background: {ACCENT_SOFT}; color: #111827; }}
