@@ -439,17 +439,17 @@ class ChatWidget(QWidget):
                 f'<span style="font-size:9.5pt">{line}</span></td></tr></table><br clear="all">')
 
     def _image_card(self, it, d, tid, state, live, mine, hhmm, side, bg, who, line, a) -> str:
-        """WhatsApp-style picture bubble: the photo itself, a small time/status line under it."""
+        """Picture message without a frame, sized like WhatsApp (max 330 px wide, 330 px tall)."""
         src = d.get("source", "") if mine else (d.get("open", "") if state == "done" else "")
         size = image_size(src) if src and os.path.exists(src) else None
         if size:
             w, h = size
-            scale = min(1.0, 300 / max(1, w), 340 / max(1, h))
-            w, h = max(40, int(w * scale)), max(40, int(h * scale))
+            scale = min(330 / max(1, w), 330 / max(1, h))
+            w, h = max(60, int(w * scale)), max(60, int(h * scale))
             pic = (f'<a href="tda:open:{tid}"><img src="{QUrl.fromLocalFile(src).toString()}" '
                    f'width="{w}" height="{h}"></a>')
         else:   # not downloaded yet
-            pic = (f'<table cellpadding="26" style="background:#E2E8F0"><tr><td align="center">'
+            pic = (f'<table cellpadding="30" style="background:#DFE5E7"><tr><td align="center">'
                    f'<span style="font-size:30pt">🖼</span><br><span style="color:#64748B;font-size:9pt">'
                    f'{human_size(int(d.get("size", 0)))}</span></td></tr></table>')
         if state == "done":
@@ -460,10 +460,10 @@ class ChatWidget(QWidget):
         else:
             status = line
         head = "" if mine or not self.is_group else f'<span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span><br>'
-        return (f'<table align="{side}" cellspacing="0" cellpadding="4" '
-                f'style="background:{bg};margin:4px 10px;border:1px solid #D6E4DD">'
-                f'<tr><td>{head}{pic}<br>'
-                f'<span style="color:#9CA3AF;font-size:8pt">{hhmm}</span> &nbsp;<span style="font-size:9pt">{status}</span>'
+        return (f'<table align="{side}" cellspacing="0" cellpadding="0" style="margin:6px 12px">'
+                f'<tr><td>{head}{pic}</td></tr>'
+                f'<tr><td align="{"left" if side == "right" else "right"}">'
+                f'<span style="color:#667781;font-size:8pt">{hhmm}</span> <span style="font-size:9pt">{status}</span>'
                 f'</td></tr></table><br clear="all">')
 
     def _link(self, url: QUrl):
@@ -483,19 +483,19 @@ class ChatWidget(QWidget):
         self.send_text.emit(self.peer_id, text)
 
     def _send_paths(self, paths):
+        """Every attachment goes through the preview screen (like WhatsApp); each item is then sent on
+        its own, so pictures appear as pictures in the chat."""
         paths = [p for p in (paths or []) if p]
         if not paths:
             return
-        if all(os.path.isfile(p) and os.path.splitext(p)[1].lower() in IMAGE_EXT for p in paths):
-            from .dialogs import ImageSendDialog          # WhatsApp-style preview + caption
-            dlg = ImageSendDialog(paths, self.peer_name, self)
-            if not dlg.exec():
-                return
-            self.send_paths.emit(self.peer_id, list(paths))
-            if dlg.caption():
-                self.send_text.emit(self.peer_id, dlg.caption())
+        from .dialogs import ImageSendDialog
+        dlg = ImageSendDialog(paths, self.peer_name, self)
+        if not dlg.exec():
             return
-        self.send_paths.emit(self.peer_id, list(paths))
+        for p in dlg.paths():
+            self.send_paths.emit(self.peer_id, [p])
+        if dlg.caption():
+            self.send_text.emit(self.peer_id, dlg.caption())
 
     def _pick_images(self):
         paths, _ = QFileDialog.getOpenFileNames(

@@ -183,6 +183,19 @@ QGroupBox::title {{ subcontrol-origin: margin; left: 10px; right: 10px; padding:
 """
 
 
+def glyph_icon(glyph: str, size: int = 64) -> QIcon:
+    """An emoji/character drawn on a white tile (used for file thumbnails)."""
+    pm = QPixmap(size, size)
+    pm.fill(QColor("white"))
+    p = QPainter(pm)
+    f = QFont()
+    f.setPointSize(int(size * 0.42))
+    p.setFont(f)
+    p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, glyph)
+    p.end()
+    return QIcon(pm)
+
+
 def send_icon(rtl: bool) -> QIcon:
     """White paper-plane arrow; points left in Arabic like WhatsApp."""
     from PySide6.QtCore import QPointF

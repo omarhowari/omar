@@ -80,16 +80,23 @@ img.save(str(pic))
 import tda.ui.dialogs as _dlg
 def _auto_send(self):           # the picture preview appears; screenshot it and press send
     self.cap.setText("صورة من الزيارة الميدانية" if lang == "ar" else "Photo from the field visit")
-    self.show(); app.processEvents(); self.grab().save(str(out / f"screen_{lang}_image_preview.png"))
+    self.show(); app.processEvents()
+    if any(x.endswith(".png") for x in self.paths()):
+        self.grab().save(str(out / f"screen_{lang}_image_preview.png"))
     return 1
 _dlg.ImageSendDialog.exec = _auto_send
-for path in (f, pic):
+tall = QImage(600, 1000, QImage.Format.Format_RGB32)
+tall.fill(QColor("#B8A068"))
+p = QPainter(tall); p.fillRect(100, 150, 400, 700, QColor("#0E4D3C")); p.end()
+tall_pic = tmp / "portrait.png"
+tall.save(str(tall_pic))
+for path in (f, pic, tall_pic):
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(path))])
     ev = QDropEvent(QPointF(200, 200), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
     chat.dropEvent(ev)
 pump(1.5)
-assert len(b.core.transfers) == 2, b.core.transfers
+assert len(b.core.transfers) == 3, b.core.transfers
 # B accepts the spreadsheet from the card; the picture downloads by itself
 pump(0.5)
 for tid, t in list(b.core.transfers.items()):

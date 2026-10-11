@@ -692,45 +692,63 @@ class GroupDialog(QDialog):
             self.accept()
 
 
-# ============================================================================ picture preview
+# ============================================================================ media preview (WhatsApp-style)
 class ImageSendDialog(QDialog):
-    """WhatsApp-style preview of the pictures about to be sent, with an optional caption."""
+    """Preview of everything about to be sent: big preview, thumbnail strip, a ➕ button that stays
+    visible to add more pictures / files / folders, a ✖ to drop the current item, and a caption."""
+
+    IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".tif", ".tiff"}
 
     def __init__(self, paths, peer_name: str, parent=None):
         super().__init__(parent)
         from PySide6.QtCore import QSize
-        from PySide6.QtGui import QImageReader, QPixmap
+        from PySide6.QtWidgets import QMenu, QToolButton
         from .theme import send_icon
         from ..i18n import lang
         self.setWindowTitle(tr("image_preview_title", name=peer_name))
-        self.resize(720, 560)
+        self.resize(760, 600)
         self.setStyleSheet("QDialog { background: #E9EDEF; }")
+        self.items: list[str] = []
+        self.pix: dict = {}
+
         self.big = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        self.big.setMinimumHeight(330)
+        self.big.setMinimumHeight(340)
+        self.big.setWordWrap(True)
+        self.remove_btn = QPushButton("✕")
+        self.remove_btn.setToolTip(tr("remove_item"))
+        self.remove_btn.setFixedSize(36, 36)
+        self.remove_btn.setStyleSheet("QPushButton { border-radius: 18px; background: white; font-size: 12pt; }")
+        self.remove_btn.clicked.connect(self._remove_current)
+        top = QHBoxLayout()
+        top.addStretch(1)
+        top.addWidget(self.remove_btn)
+
         self.strip = QListWidget()
         self.strip.setViewMode(QListWidget.ViewMode.IconMode)
         self.strip.setFlow(QListWidget.Flow.LeftToRight)
         self.strip.setWrapping(False)
-        self.strip.setIconSize(QSize(72, 72))
-        self.strip.setFixedHeight(100)
-        self.pix = []
-        for p in paths:
-            r = QImageReader(p)
-            r.setAutoTransform(True)
-            r.setScaledSize(r.size().scaled(QSize(1200, 1200), Qt.AspectRatioMode.KeepAspectRatio)
-                            if r.size().isValid() else QSize())
-            img = r.read()
-            pm = QPixmap.fromImage(img) if not img.isNull() else QPixmap()
-            self.pix.append(pm)
-            it = QListWidgetItem()
-            if not pm.isNull():
-                from PySide6.QtGui import QIcon
-                it.setIcon(QIcon(pm.scaled(72, 72, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                           Qt.TransformationMode.SmoothTransformation)))
-            it.setToolTip(os.path.basename(p))
-            self.strip.addItem(it)
+        self.strip.setIconSize(QSize(64, 64))
+        self.strip.setFixedHeight(96)
+        self.strip.setStyleSheet("QListWidget { background: transparent; border: none; }")
         self.strip.currentRowChanged.connect(self._show)
-        self.strip.setVisible(len(paths) > 1)
+
+        # ➕ always visible: add more of anything
+        self.add_btn = QToolButton()
+        self.add_btn.setText("➕")
+        self.add_btn.setToolTip(tr("attach_more"))
+        self.add_btn.setFixedSize(64, 64)
+        self.add_btn.setStyleSheet("QToolButton { background: white; border: 2px dashed #94A3B8; border-radius: 10px;"
+                                   " font-size: 20pt; color: #475569; } QToolButton::menu-indicator { image: none; }")
+        self.add_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.add_btn)
+        menu.addAction("🖼  " + tr("attach_image"), self._add_images)
+        menu.addAction("📄  " + tr("attach_file"), self._add_files)
+        menu.addAction("📁  " + tr("attach_folder"), self._add_folder)
+        self.add_btn.setMenu(menu)
+        strip_row = QHBoxLayout()
+        strip_row.addWidget(self.strip, 1)
+        strip_row.addWidget(self.add_btn)
+
         self.cap = QLineEdit(placeholderText=tr("add_caption"))
         self.cap.setStyleSheet("QLineEdit { border-radius: 20px; padding: 9px 14px; font-size: 10.5pt; }")
         self.cap.returnPressed.connect(self.accept)
@@ -742,18 +760,100 @@ class ImageSendDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(self.cap, 1)
         row.addWidget(send)
+
         lay = QVBoxLayout(self)
+        lay.addLayout(top)
         lay.addWidget(self.big, 1)
-        lay.addWidget(self.strip)
+        lay.addLayout(strip_row)
         lay.addLayout(row)
-        self.strip.setCurrentRow(0)
-        self._show(0)
+        self.add_paths(paths)
         self.cap.setFocus()
 
+    # --- items
+    def _is_image(self, p):
+        return os.path.isfile(p) and os.path.splitext(p)[1].lower() in self.IMAGE_EXT
+
+    def _load(self, p):
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QImageReader, QPixmap
+        if p in self.pix:
+            return self.pix[p]
+        pm = QPixmap()
+        if self._is_image(p):
+            r = QImageReader(p)
+            r.setAutoTransform(True)
+            if r.size().isValid():
+                r.setScaledSize(r.size().scaled(QSize(1400, 1400), Qt.AspectRatioMode.KeepAspectRatio))
+            img = r.read()
+            if not img.isNull():
+                pm = QPixmap.fromImage(img)
+        self.pix[p] = pm
+        return pm
+
+    def add_paths(self, paths):
+        from PySide6.QtGui import QIcon
+        from .chat import FILE_ICONS
+        from .theme import glyph_icon
+        for p in paths:
+            if not p or p in self.items:
+                continue
+            self.items.append(p)
+            it = QListWidgetItem()
+            pm = self._load(p)
+            if not pm.isNull():
+                it.setIcon(QIcon(pm.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                           Qt.TransformationMode.SmoothTransformation)))
+            else:
+                glyph = "📁" if os.path.isdir(p) else FILE_ICONS.get(os.path.splitext(p)[1].lower(), "📄")
+                it.setIcon(glyph_icon(glyph))
+            it.setToolTip(os.path.basename(p.rstrip("/\\")))
+            self.strip.addItem(it)
+        self.strip.setCurrentRow(self.strip.count() - 1)
+
+    def _remove_current(self):
+        i = self.strip.currentRow()
+        if 0 <= i < len(self.items):
+            self.items.pop(i)
+            self.strip.takeItem(i)
+        if not self.items:
+            self.reject()
+            return
+        self.strip.setCurrentRow(min(i, len(self.items) - 1))
+
     def _show(self, i):
-        if 0 <= i < len(self.pix) and not self.pix[i].isNull():
-            self.big.setPixmap(self.pix[i].scaled(660, 360, Qt.AspectRatioMode.KeepAspectRatio,
-                                                  Qt.TransformationMode.SmoothTransformation))
+        if not (0 <= i < len(self.items)):
+            return
+        p = self.items[i]
+        pm = self._load(p)
+        if not pm.isNull():
+            self.big.setPixmap(pm.scaled(700, 380, Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation))
+        else:
+            from .chat import FILE_ICONS
+            glyph = "📁" if os.path.isdir(p) else FILE_ICONS.get(os.path.splitext(p)[1].lower(), "📄")
+            size = ""
+            if os.path.isfile(p):
+                size = human_size(os.path.getsize(p))
+            self.big.setText(f"<div style='font-size:64pt'>{glyph}</div>"
+                             f"<div style='font-size:13pt;color:#111827'><b>{os.path.basename(p.rstrip('/\\'))}</b></div>"
+                             f"<div style='color:#64748B'>{size}</div>")
+
+    def _add_images(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, tr("attach_image"), "",
+                                                f"{tr('images')} (*.png *.jpg *.jpeg *.gif *.bmp *.webp *.heic *.tif *.tiff)")
+        self.add_paths(paths)
+
+    def _add_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, tr("attach_file"))
+        self.add_paths(paths)
+
+    def _add_folder(self):
+        path = QFileDialog.getExistingDirectory(self, tr("attach_folder"))
+        if path:
+            self.add_paths([path])
+
+    def paths(self) -> list:
+        return list(self.items)
 
     def caption(self) -> str:
         return self.cap.text().strip()
