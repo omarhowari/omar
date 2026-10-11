@@ -1,9 +1,7 @@
 name: Build Windows
 
+# Manual only: the published installer is built with packaging/windows/build_portable.sh
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
