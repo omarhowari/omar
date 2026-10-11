@@ -22,6 +22,7 @@ from ..config import Settings
 from ..history import History
 from ..i18n import human_size, tr
 from ..calls import CallController
+from .. import groups as G
 from ..network import NetworkCore, Peer
 from .call_window import CallWindow
 from .chat import IMAGE_EXT, ChatWidget, local_paths
@@ -128,6 +129,8 @@ class MainWindow(QMainWindow):
         core.group_updated.connect(self.on_group_updated)
         core.group_removed.connect(self.on_group_removed)
         core.group_message_deleted.connect(self.on_group_message_deleted)
+        core.message_deleted.connect(self.on_peer_message_deleted)
+        core.reaction.connect(self.on_reaction)
         core.update_available.connect(self.on_update_available)
         core.update_progress.connect(self.on_update_progress)
         core.update_ready.connect(self.on_update_ready)
@@ -465,6 +468,8 @@ class MainWindow(QMainWindow):
             chat.send_paths.connect(self.send_paths)
             chat.start_call.connect(self.start_call)
             chat.transfer_action.connect(self.transfer_action)
+            chat.my_id = self.s.user_id
+            chat.message_action.connect(lambda a, m, x, k=pid: self.on_message_action(k, a, m, x))
             chat.transfer_lookup = self.core.transfers.get
             chat.load(self.history.load(pid))
             self.chats[pid] = chat
@@ -530,18 +535,20 @@ class MainWindow(QMainWindow):
             self.chats[pid].load([])
 
     # ======================================================================= sending
-    def send_text(self, pid: str, text: str, multi=False):
+    def send_text(self, pid: str, text: str, multi=False, fwd=False):
         mid = uuid.uuid4().hex
+        reply = self.chats[pid].take_reply() if (pid in self.chats and not fwd and not multi) else None
+        extra = {k: v for k, v in (("reply", reply), ("fwd", fwd), ("sender", self.s.user_id)) if v}
         item = {"id": mid, "outgoing": 1, "text": text, "ts": time.time(), "status": "", "multi": multi,
-                "kind": "msg", "peer_name": self.s.name}
+                "kind": "msg", "peer_name": self.s.name, "extra": extra}
         name = self.core.peers[pid].name if pid in self.core.peers else self.known.get(pid, {}).get("name", "")
-        self.history.add(mid, pid, name, True, text, item["ts"], "", multi)
+        self.history.add(mid, pid, name, True, text, item["ts"], "", multi, extra=extra)
         if pid in self.chats:
             self.chats[pid].add(item)
         if is_group_key(pid):
-            self.core.send_group_message(pid[2:], text, msg_id=mid)
+            self.core.send_group_message(pid[2:], text, msg_id=mid, reply=reply, fwd=fwd)
         else:
-            self.core.send_message(pid, text, multi=multi, msg_id=mid)   # queued automatically if offline
+            self.core.send_message(pid, text, multi=multi, msg_id=mid, reply=reply, fwd=fwd)   # queued if offline
 
     def send_paths(self, pid: str, paths: list):
         if is_group_key(pid):
@@ -619,14 +626,157 @@ class MainWindow(QMainWindow):
         GroupInfoDialog(self.core, gid, self._people(), start_call=self.start_call,
                         open_chat=self.open_chat, parent=self).exec()
 
-    def on_group_message_deleted(self, gid, msg_id, _by):
+    def on_group_message_deleted(self, gid, msg_id, by):
+        g = self.core.groups.get(gid)
+        if by != self.s.user_id and not (g and G.is_admin(g, by)):
+            if self.history.get_extra(msg_id).get("sender") != by:
+                return                      # a member may only delete his own messages
+        self._mark_deleted("g:" + gid, msg_id)
+
+    def on_peer_message_deleted(self, sender, msg_id):
+        row = self.history.get(msg_id)
+        if row and row["peer_id"] == sender and not row["outgoing"]:
+            self._mark_deleted(sender, msg_id)
+
+    def _mark_deleted(self, key, msg_id):
         self.history.set_kind(msg_id, "deleted")
-        chat = self.chats.get("g:" + gid)
+        self.history.set_extra(msg_id, {})
+        chat = self.chats.get(key)
         if chat:
             for it in chat.items:
                 if it.get("id") == msg_id:
-                    it["kind"] = "deleted"
+                    it["kind"], it["extra"] = "deleted", {}
             chat.schedule_render()
+
+    # ======================================================================= message menu actions
+    def on_message_action(self, key, action, mid, arg):
+        chat = self.chats.get(key)
+        it = chat.item(mid) if chat else None
+        if it is None:
+            return
+        if action == "react":
+            ex = dict(it.get("extra") or {})
+            r = dict(ex.get("reactions") or {})
+            if arg:
+                r[self.s.user_id] = {"e": arg, "n": self.s.name}
+            else:
+                r.pop(self.s.user_id, None)
+            ex["reactions"] = r
+            self.history.set_extra(mid, ex)
+            chat.update_extra(mid, ex)
+            self.core.react(key, mid, arg)
+        elif action == "star":
+            ex = dict(it.get("extra") or {})
+            ex["star"] = arg == "1"
+            self.history.set_extra(mid, ex)
+            chat.update_extra(mid, ex)
+        elif action == "delete_me":
+            if QMessageBox.question(self, APP_NAME, tr("delete_me_confirm")) == QMessageBox.StandardButton.Yes:
+                self.history.delete(mid)
+                chat.remove_item(mid)
+        elif action == "delete_all":
+            if QMessageBox.question(self, APP_NAME, tr("delete_all_confirm")) != QMessageBox.StandardButton.Yes:
+                return
+            own = bool(it.get("outgoing"))
+            if self.core.delete_message(key, mid, own=own) and not is_group_key(key):
+                self._mark_deleted(key, mid)
+        elif action == "forward":
+            self.forward(chat, it)
+        elif action == "download":
+            self.download(it)
+
+    def forward(self, chat, it):
+        from PySide6.QtWidgets import QDialog, QListWidget, QListWidgetItem, QVBoxLayout
+        targets = []
+        for gid, g in self.core.groups.items():
+            if self.core.can(gid, "write"):
+                targets.append(("g:" + gid, "👥 " + g["name"], True))
+        seen = set()
+        for p in sorted(self.core.peers.values(), key=lambda p: p.name.lower()):
+            targets.append((p.id, f"{p.name}   —   {p.group}", True))
+            seen.add(p.id)
+        for c in sorted(self.known.values(), key=lambda c: (c.get("name") or "").lower()):
+            if c["id"] not in seen and c["id"] != self.s.user_id:
+                targets.append((c["id"], f'{c.get("name", "?")}   ({tr("status_offline")})', False))
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("forward_title"))
+        dlg.resize(420, 480)
+        lst = QListWidget()
+        for key, label, online in targets:
+            x = QListWidgetItem(status_icon("available" if online else "offline"), label)
+            x.setData(Qt.ItemDataRole.UserRole, key)
+            x.setCheckState(Qt.CheckState.Unchecked)
+            lst.addItem(x)
+        ok = QPushButton(tr("send"), objectName="Primary")
+        ok.clicked.connect(dlg.accept)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(f"<b>{tr('forward_title')}</b>  <span style='color:#6B7280'>"
+                           f"{chat.snippet(it)[:60]}</span>"))
+        v.addWidget(lst, 1)
+        v.addWidget(ok)
+        if not dlg.exec():
+            return
+        keys = [lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())
+                if lst.item(i).checkState() == Qt.CheckState.Checked]
+        if not keys:
+            return
+        if it.get("kind") == "file":
+            path = chat.file_path(it)
+            if not path or not os.path.exists(path):
+                QMessageBox.information(self, APP_NAME, tr("file_not_ready"))
+                return
+            for k in keys:
+                self.send_paths(k, [path])
+        else:
+            for k in keys:
+                self.send_text(k, it.get("text") or "", fwd=True)
+        self.statusBar().showMessage(tr("forward_done", n=len(keys)), 4000)
+
+    def download(self, it):
+        import shutil
+        from PySide6.QtWidgets import QFileDialog
+        t = self.core.transfers.get(it["id"])
+        if t and t.direction == "in" and t.state == "offered":
+            self.core.accept_transfer(t.tid)
+            return
+        path = ChatWidget.file_path(it)
+        if not path or not os.path.exists(path):
+            QMessageBox.information(self, APP_NAME, tr("file_not_ready"))
+            return
+        if os.path.isdir(path):
+            dest = QFileDialog.getExistingDirectory(self, tr("download"))
+            if dest:
+                shutil.copytree(path, os.path.join(dest, os.path.basename(path)), dirs_exist_ok=True)
+            return
+        dest, _ = QFileDialog.getSaveFileName(self, tr("download"),
+                                              os.path.join(os.path.expanduser("~"), os.path.basename(path)))
+        if dest:
+            try:
+                shutil.copy2(path, dest)
+            except OSError as e:
+                QMessageBox.warning(self, APP_NAME, str(e))
+
+    def on_reaction(self, r: dict):
+        key = "g:" + r["gid"] if r["gid"] else r["from"]
+        mid = r["msg_id"]
+        row = self.history.get(mid)
+        if not row or row["peer_id"] != key:
+            return
+        ex = self.history.get_extra(mid)
+        rx = dict(ex.get("reactions") or {})
+        if r["emoji"]:
+            rx[r["from"]] = {"e": r["emoji"], "n": r["from_name"]}
+        else:
+            rx.pop(r["from"], None)
+        ex["reactions"] = rx
+        self.history.set_extra(mid, ex)
+        chat = self.chats.get(key)
+        if chat:
+            chat.update_extra(mid, ex)
+        if r["emoji"] and row["outgoing"]:
+            visible = chat is not None and self.isActiveWindow() and self.tabs.currentWidget() is chat
+            if not visible:
+                self._alert(APP_NAME, tr("reacted", name=r["from_name"], e=r["emoji"]))
 
     def on_group_updated(self, gid):
         self._update_chat_peer("g:" + gid)
@@ -647,9 +797,10 @@ class MainWindow(QMainWindow):
         chat = self.open_chat(pid, focus=False)   # loads history first, then we append
         if chat.has_item(m["id"]):
             return                                  # duplicate (re-delivered after a lost ack)
-        self.history.add(m["id"], pid, m["from_name"], False, m["text"], m["ts"], "", m["multi"])
+        extra = {k: v for k, v in (("reply", m.get("reply")), ("fwd", m.get("fwd")), ("sender", sender)) if v}
+        self.history.add(m["id"], pid, m["from_name"], False, m["text"], m["ts"], "", m["multi"], extra=extra)
         chat.add({"id": m["id"], "outgoing": 0, "text": m["text"], "ts": m["ts"], "multi": m["multi"],
-                  "kind": "msg", "peer_name": m["from_name"]})
+                  "kind": "msg", "peer_name": m["from_name"], "extra": extra})
         visible = self.isActiveWindow() and self.tabs.currentWidget() is chat and self.stack.currentIndex() == 1
         if self.tabs.count() == 1 and not self.isVisible():
             self.tabs.setCurrentWidget(chat)

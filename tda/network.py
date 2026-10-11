@@ -83,6 +83,13 @@ class Transfer:
         return self.state in ("done", "failed", "declined", "canceled")
 
 
+def _clean_reply(r) -> Optional[dict]:
+    """The quoted message a reply points to: {"id", "name", "text"} (short)."""
+    if not isinstance(r, dict) or not r.get("id"):
+        return None
+    return {"id": str(r["id"])[:64], "name": str(r.get("name", ""))[:64], "text": str(r.get("text", ""))[:200]}
+
+
 def _clean_host(addr: QHostAddress) -> str:
     s = addr.toString()
     if s.lower().startswith("::ffff:"):
@@ -433,6 +440,8 @@ class NetworkCore(QObject):
     group_updated = Signal(str)            # gid
     group_removed = Signal(str)            # gid
     group_message_deleted = Signal(str, str, str)   # gid, msg id, deleted by (user id)
+    message_deleted = Signal(str, str)     # private chat: sender id, msg id (sender deleted it for everyone)
+    reaction = Signal(dict)                # {"gid","from","from_name","msg_id","emoji"} ("" emoji = removed)
     update_available = Signal(str, str)    # newer version, peer id that has it
     update_progress = Signal(int, int)     # bytes done, total
     update_ready = Signal(str, str)        # installer path, version
@@ -673,7 +682,20 @@ class NetworkCore(QObject):
             self.message_received.emit({
                 "id": str(obj.get("id") or uuid.uuid4().hex), "from": sender,
                 "from_name": peer.name if peer else str(obj.get("from_name", "?")),
-                "text": text, "ts": ts, "multi": bool(obj.get("multi")), "gid": gid})
+                "text": text, "ts": ts, "multi": bool(obj.get("multi")), "gid": gid,
+                "reply": _clean_reply(obj.get("reply")), "fwd": bool(obj.get("fwd"))})
+        elif t == "react":
+            conn.reply({"type": "ack"})
+            gid = str(obj.get("gid", ""))[:64]
+            if gid and sender not in self.groups.get(gid, {}).get("members", {}):
+                return
+            emoji = str(obj.get("emoji", ""))[:16]
+            self.reaction.emit({"gid": gid, "from": sender, "msg_id": str(obj.get("msg_id", ""))[:64],
+                                "from_name": peer.name if peer else str(obj.get("from_name", "?"))[:64],
+                                "emoji": emoji})
+        elif t == "msg_delete":
+            conn.reply({"type": "ack"})
+            self.message_deleted.emit(sender, str(obj.get("msg_id", ""))[:64])
         elif t == "group_update":
             conn.reply({"type": "ack"})
             g = obj.get("group")
@@ -690,7 +712,8 @@ class NetworkCore(QObject):
         elif t == "group_delete":
             conn.reply({"type": "ack"})
             g = self.groups.get(str(obj.get("gid", "")))
-            if g and G.is_admin(g, sender):
+            if g and (G.is_admin(g, sender) or (obj.get("own") and sender in g["members"])):
+                # "own": a member deleting his own message (the UI checks the message is really his)
                 self.group_message_deleted.emit(g["gid"], str(obj.get("msg_id", ""))[:64], sender)
         elif t == "media":
             conn.reply({"type": "ack"})
@@ -801,10 +824,14 @@ class NetworkCore(QObject):
 
     # ---------------------------------------------------------------- messages (with offline outbox)
     def send_message(self, peer_id: str, text: str, multi: bool = False, msg_id: Optional[str] = None,
-                     gid: str = "") -> str:
+                     gid: str = "", reply: Optional[dict] = None, fwd: bool = False) -> str:
         """Deliver now if the user is online; otherwise keep it and deliver when they come back."""
         msg_id = msg_id or uuid.uuid4().hex
         obj = {"type": "msg", "id": msg_id, "text": text, "ts": time.time(), "multi": multi}
+        if reply:
+            obj["reply"] = _clean_reply(reply)
+        if fwd:
+            obj["fwd"] = True
         if gid and gid in self.groups:
             obj["gid"], obj["gname"] = gid, self.groups[gid]["name"]
         self._send_or_queue(peer_id, msg_id, obj)
@@ -1038,14 +1065,48 @@ class NetworkCore(QObject):
         self.group_message_deleted.emit(gid, msg_id, self.settings.user_id)
         return True
 
-    def send_group_message(self, gid: str, text: str, msg_id: Optional[str] = None) -> str:
+    def send_group_message(self, gid: str, text: str, msg_id: Optional[str] = None,
+                           reply: Optional[dict] = None, fwd: bool = False) -> str:
         msg_id = msg_id or uuid.uuid4().hex
         if not self.can(gid, "write"):
             return ""
         for pid in self.groups.get(gid, {}).get("members", {}):
             if pid != self.settings.user_id:
-                self.send_message(pid, text, msg_id=msg_id, gid=gid)
+                self.send_message(pid, text, msg_id=msg_id, gid=gid, reply=reply, fwd=fwd)
         return msg_id
+
+    def react(self, peer_or_group: str, msg_id: str, emoji: str):
+        """WhatsApp-style reaction (👍 ❤️ ...) to a message; "" removes my reaction.
+        peer_or_group: a user id, or "g:<gid>" for a group (everyone in the group sees it)."""
+        if peer_or_group.startswith("g:"):
+            gid = peer_or_group[2:]
+            targets = [p for p in self.groups.get(gid, {}).get("members", {}) if p != self.settings.user_id]
+        else:
+            gid, targets = "", [peer_or_group]
+        for pid in targets:
+            obj = {"type": "react", "msg_id": msg_id, "emoji": emoji}
+            if gid:
+                obj["gid"] = gid
+            # one outbox slot per (message, me): a newer reaction replaces an undelivered older one
+            self._send_or_queue(pid, f"re-{msg_id}", obj)
+
+    def delete_message(self, peer_or_group: str, msg_id: str, own: bool = True) -> bool:
+        """Delete for everyone: my own message (private or group), or any group message if I am an admin."""
+        if peer_or_group.startswith("g:"):
+            gid = peer_or_group[2:]
+            g = self.groups.get(gid)
+            if not g:
+                return False
+            if not own and not G.is_admin(g, self.settings.user_id):
+                return False
+            for pid in g["members"]:
+                if pid != self.settings.user_id:
+                    self._send_or_queue(pid, f"del-{msg_id}", {"type": "group_delete", "gid": gid,
+                                                              "msg_id": msg_id, "own": bool(own)})
+            self.group_message_deleted.emit(gid, msg_id, self.settings.user_id)
+            return True
+        self._send_or_queue(peer_or_group, f"del-{msg_id}", {"type": "msg_delete", "msg_id": msg_id})
+        return True
 
     def offer_group_files(self, gid: str, paths: List[str]) -> List[str]:
         g = self.groups.get(gid)

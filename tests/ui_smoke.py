@@ -216,6 +216,42 @@ a.grab().save(str(out / f"screen_{lang}_main.png"))
 
 b.grab().save(str(out / f"screen_{lang}_peer.png"))
 
+# --- WhatsApp-style message actions: reply, reactions, menu
+ca = a.open_chat(bid)
+cb = b.open_chat(a.s.user_id)
+pump(0.5)
+first = next(it for it in cb.items if it.get("kind") == "msg" and not it.get("outgoing"))
+cb.start_reply(first["id"])
+pump(0.2)
+cb.resize(900, 640); cb.show(); pump(0.3)
+cb.grab().save(str(out / f"screen_{lang}_reply_compose.png"))
+b.send_text(a.s.user_id, "نعم وصلني، سأرسل الملاحظات اليوم" if lang == "ar" else "Yes, I'll send my notes today")
+pump(1.2)
+last = ca.items[-1]
+assert last["extra"].get("reply", {}).get("id") == first["id"], last
+b.on_message_action(a.s.user_id, "react", first["id"], "👍")
+a.on_message_action(bid, "react", last["id"], "❤️")
+pump(1.5)
+assert any((it.get("extra") or {}).get("reactions") for it in ca.items), "reaction did not arrive"
+assert cb.view.msg_at(cb.view.viewport().rect().center()) is not None
+mm = cb.build_message_menu(first["id"])
+mm.adjustSize(); mm.show(); pump(0.3)
+mm.grab().save(str(out / f"screen_{lang}_message_menu.png"))
+mm.close()
+# right-click position -> message id
+found = set()
+vp = cb.view.viewport()
+for y in range(5, vp.height(), 12):
+    for x in range(10, vp.width(), 40):
+        from PySide6.QtCore import QPoint
+        mid = cb.view.msg_at(QPoint(x, y))
+        if mid:
+            found.add(mid)
+assert first["id"] in found or last["id"] in found, found
+ca.resize(900, 640); ca.show(); pump(0.4)
+ca.grab().save(str(out / f"screen_{lang}_reactions.png"))
+print("reply / reactions / menu ok", len(found))
+
 # --- group administration: B made admin, Khaled frozen from writing
 kid = wins[2].s.user_id
 a.core.update_group(gid, admins_add=[bid])

@@ -301,6 +301,25 @@ STRINGS = {
     "share_email_subject": ("برنامج TDA للمراسلة على الشبكة المحلية", "TDA LAN Messenger"),
     "share_email_body": ("مرفق ملف تثبيت برنامج TDA. شغّله على جهازك ثم اكتب اسمك وقسمك.",
                          "Attached is the TDA installer. Run it, then enter your name and department."),
+    # message menu (WhatsApp style)
+    "reply": ("رد", "Reply"),
+    "copy": ("نسخ", "Copy"),
+    "react": ("تفاعل", "React"),
+    "more_emojis": ("المزيد", "More"),
+    "download": ("تنزيل / حفظ باسم…", "Download / Save as…"),
+    "forward": ("إعادة توجيه", "Forward"),
+    "star": ("تمييز بنجمة", "Star"),
+    "unstar": ("إلغاء التمييز بنجمة", "Unstar"),
+    "delete_me": ("حذف لدي", "Delete for me"),
+    "delete_all": ("حذف لدى الجميع", "Delete for everyone"),
+    "delete_me_confirm": ("حذف هذه الرسالة من جهازك فقط؟", "Delete this message from your computer only?"),
+    "delete_all_confirm": ("حذف هذه الرسالة لدى الجميع؟", "Delete this message for everyone?"),
+    "forwarded": ("رسالة مُعاد توجيهها", "Forwarded"),
+    "forward_title": ("إعادة توجيه إلى…", "Forward to…"),
+    "forward_done": ("تمت إعادة التوجيه إلى {n}.", "Forwarded to {n}."),
+    "photo": ("صورة", "Photo"),
+    "file_not_ready": ("الملف غير موجود على هذا الجهاز بعد.", "The file is not on this computer yet."),
+    "reacted": ("{name} تفاعل {e} على رسالتك", "{name} reacted {e} to your message"),
 }
 
 

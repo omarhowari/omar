@@ -27,6 +27,17 @@ FILE_ICONS = {".pdf": "📕", ".doc": "📘", ".docx": "📘", ".xls": "📗", "
 
 _size_cache: dict = {}
 
+SLIM_SCROLLBAR = """
+QScrollBar:vertical { background: transparent; width: 7px; margin: 0px; border: none; }
+QScrollBar::handle:vertical { background: rgba(0,0,0,0.22); border-radius: 3px; min-height: 36px; }
+QScrollBar::handle:vertical:hover { background: rgba(0,0,0,0.38); }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; border: none; background: none; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+"""
+REACTIONS = ("👍", "❤️", "😂", "😮", "😢", "🙏")
+MORE_EMOJIS = ("👍", "👎", "❤️", "🔥", "👏", "🎉", "😂", "🤣", "😊", "😍", "🤔", "😮", "😢", "😡", "🙏", "💯",
+               "✅", "❌", "👌", "🤝", "💪", "🌹", "☕", "⭐")
+
 
 def image_size(path: str):
     """Width/height from the file header only (fast), cached."""
@@ -75,6 +86,38 @@ class ChatView(QTextBrowser):
         # no horizontal bar: everything wraps to the window width (like WhatsApp)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        # thin WhatsApp-like scroll bar (no arrows, light grey handle)
+        self.verticalScrollBar().setStyleSheet(SLIM_SCROLLBAR)
+
+    message_menu = Signal(str, object)      # msg id, global QPoint
+
+    def msg_at(self, pos) -> str:
+        """Id of the message bubble under a point of the viewport ("" if none)."""
+        from PySide6.QtGui import QTextCursor, QTextTable
+        cur = self.cursorForPosition(pos)
+        table = cur.currentTable()
+        while table is not None:
+            cell = table.cellAt(cur)
+            if cell.isValid():
+                c = QTextCursor(cell.firstCursorPosition())
+                for _ in range(3):
+                    c.movePosition(QTextCursor.MoveOperation.NextCharacter)
+                    for name in c.charFormat().anchorNames():
+                        if name.startswith("m_"):
+                            return name[2:]
+            parent = table.parentFrame()
+            cur = QTextCursor(table.firstCursorPosition())
+            cur.movePosition(QTextCursor.MoveOperation.PreviousCharacter)
+            table = parent if isinstance(parent, QTextTable) else None
+        return ""
+
+    def contextMenuEvent(self, e):
+        mid = self.msg_at(e.pos())
+        if mid:
+            self.message_menu.emit(mid, e.globalPos())
+            return
+        super().contextMenuEvent(e)
 
     def set_background(self, mode: str, image: str = "", opacity: int = 100):
         """mode: "pattern" | "image" | "none"."""
@@ -111,6 +154,7 @@ class ChatView(QTextBrowser):
 
 class MessageInput(QPlainTextEdit):
     submit = Signal()
+    escape = Signal()
     files_pasted = Signal(list)
 
     def canInsertFromMimeData(self, mime):
@@ -142,6 +186,8 @@ class MessageInput(QPlainTextEdit):
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
             self.submit.emit()
             return
+        if e.key() == Qt.Key.Key_Escape:
+            self.escape.emit()
         super().keyPressEvent(e)
 
 
@@ -175,6 +221,7 @@ class ChatWidget(QWidget):
     start_call = Signal(str)            # peer_id
     transfer_action = Signal(str, str)  # action, tid
     manage_group = Signal(str)          # chat key "g:<gid>"
+    message_action = Signal(str, str, str)   # action (react|forward|star|delete_me|delete_all|download), msg id, arg
 
     def __init__(self, peer_id: str, peer_name: str, my_name: str, parent=None, is_group: bool = False):
         super().__init__(parent)
@@ -210,8 +257,11 @@ class ChatWidget(QWidget):
         hl.addWidget(self.btn_manage)
         self.btn_call.setVisible(not is_group)
         self.btn_manage.setVisible(is_group)
+        self.my_id = ""
+        self.reply_to: dict | None = None
 
         self.view = ChatView()
+        self.view.message_menu.connect(self.message_menu)
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self._link)
         self.view.setAcceptDrops(False)
@@ -237,6 +287,7 @@ class ChatWidget(QWidget):
         self.input.setFixedHeight(40)
         self.input.document().documentLayout().documentSizeChanged.connect(lambda _s: self._grow())
         self.input.submit.connect(self._submit)
+        self.input.escape.connect(self.cancel_reply)
         self.input.files_pasted.connect(self._send_paths)
 
         self.btn_attach = QPushButton("📎")
@@ -267,9 +318,34 @@ class ChatWidget(QWidget):
         bx.addWidget(self.input, 1)
         bx.addWidget(self.btn_send, 0, Qt.AlignmentFlag.AlignBottom)
 
+        # "replying to ..." strip shown above the text box (WhatsApp style)
+        self.reply_bar = QFrame(objectName="ReplyBar")
+        edge = "right" if lang() == "ar" else "left"
+        self.reply_bar.setStyleSheet("#ReplyBar{background:#F0F2F5;border-radius:10px}"
+                                     f"#ReplyQuote{{background:white;border-radius:6px;border-{edge}:4px solid #0E8F6F}}"
+                                     "#ReplyX{border:none;background:transparent;color:#54656F;font-size:14pt;"
+                                     "padding:0px;min-width:0px}#ReplyX:hover{color:#B91C1C}")
+        rb = QHBoxLayout(self.reply_bar)
+        rb.setContentsMargins(8, 6, 8, 6)
+        self.reply_lbl = QLabel(objectName="ReplyQuote")
+        self.reply_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.reply_lbl.setContentsMargins(10, 6, 10, 6)
+        x = QPushButton("✕", objectName="ReplyX")
+        x.setToolTip(tr("cancel"))
+        x.setFixedSize(32, 32)
+        x.setCursor(Qt.CursorShape.PointingHandCursor)
+        x.clicked.connect(self.cancel_reply)
+        rb.addWidget(self.reply_lbl, 1)
+        rb.addWidget(x)
+        self.reply_bar.hide()
+
         bottom = QFrame(objectName="ComposeBar")
-        bv = QHBoxLayout(bottom)
-        bv.setContentsMargins(12, 8, 12, 10)
+        bvv = QVBoxLayout(bottom)
+        bvv.setContentsMargins(12, 8, 12, 10)
+        bvv.setSpacing(6)
+        bvv.addWidget(self.reply_bar)
+        bv = QHBoxLayout()
+        bvv.addLayout(bv)
         bv.addWidget(box)
 
         lay = QVBoxLayout(self)
@@ -385,6 +461,7 @@ class ChatWidget(QWidget):
                 continue
             mine = bool(it.get("outgoing"))
             bg, fg, border, pt = self._bubble(mine)
+            ex = it.get("extra") or {}
             who = tr("me") if mine else html.escape(it.get("peer_name") or self.peer_name)
             tick = ""
             if mine:
@@ -394,16 +471,17 @@ class ChatWidget(QWidget):
                         f' <span style="color:#DC2626">✗ {tr("not_delivered")}</span>' if st == "failed" else
                         ' <span style="color:#9CA3AF">…</span>')
             multi = f' <span style="color:#7C3AED">[{tr("multi_tag")}]</span>' if it.get("multi") else ""
-            if self.is_group and self.is_admin:
-                multi += (f' &nbsp;<a href="tda:delmsg:{it.get("id", "")}" style="color:#B91C1C;'
-                          f'text-decoration:none">🗑</a>')
+            mid = it.get("id", "")
+            fwd = (f'<span style="color:{fg["muted"]};font-size:{pt - 2.5:.1f}pt"><i>↪ {tr("forwarded")}</i></span><br>'
+                   if ex.get("fwd") else "")
             parts.append(
                 f'<table align="{mine_side if mine else theirs_side}" cellspacing="0" cellpadding="9" '
                 f'style="background:{bg};margin:4px 10px;{border}">'
-                f'<tr><td><span style="color:{fg["name"]};font-size:{pt - 2:.1f}pt"><b>{who}</b>{multi}</span>'
-                f'<span style="color:{fg["muted"]};font-size:{pt - 2.5:.1f}pt">  {hhmm}</span>{tick}<br>'
+                f'<tr><td><a name="m_{mid}"></a><span style="color:{fg["name"]};font-size:{pt - 2:.1f}pt"><b>{who}</b>{multi}</span>'
+                f'<span style="color:{fg["muted"]};font-size:{pt - 2.5:.1f}pt">  {self._star(ex)}{hhmm}</span>{tick}'
+                f'{self._menu_link(mid, fg["muted"])}<br>{fwd}{self._quote(ex.get("reply"), bg, pt)}'
                 f'<span style="font-size:{pt:.1f}pt;color:{fg["text"]}">{_render_text(it.get("text", ""))}</span>'
-                f'</td></tr></table><br clear="all">')
+                f'{self._reactions(ex, pt)}</td></tr></table><br clear="all">')
         sb = self.view.verticalScrollBar()
         old = sb.value()
         self.view.setHtml("".join(parts))
@@ -483,13 +561,14 @@ class ChatWidget(QWidget):
         emb = "\u202b" if lang() == "ar" else "\u202a"
         if n == 1 and not d.get("is_dir") and os.path.splitext(title)[1].lower() in IMAGE_EXT:
             return self._image_card(it, d, tid, state, live, mine, hhmm, side, bg, who, line, a)
+        ex = it.get("extra") or {}
         return (f'<table align="{side}" cellspacing="0" cellpadding="10" '
                 f'style="background:{bg};margin:4px 10px;border:1px solid #D6E4DD">'
-                f'<tr><td><span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span>'
-                f'<span style="color:#9CA3AF;font-size:8pt">  {hhmm}</span><br>'
+                f'<tr><td><a name="m_{tid}"></a><span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span>'
+                f'<span style="color:#9CA3AF;font-size:8pt">  {self._star(ex)}{hhmm}</span>{self._menu_link(tid)}<br>'
                 f'<span style="font-size:20pt">{icon}</span> <span style="font-size:10.5pt;color:#111827"><b>{emb}{name}\u202c</b></span>'
                 f'\u200f <span style="color:#6B7280;font-size:9pt">\u200f({size})\u200f</span>{thumb}<br>'
-                f'<span style="font-size:9.5pt">{line}</span></td></tr></table><br clear="all">')
+                f'<span style="font-size:9.5pt">{line}</span>{self._reactions(ex, 10.5)}</td></tr></table><br clear="all">')
 
     def _image_card(self, it, d, tid, state, live, mine, hhmm, side, bg, who, line, a) -> str:
         """Picture message without a frame, sized like WhatsApp (max 330 px wide, 330 px tall)."""
@@ -513,19 +592,231 @@ class ChatWidget(QWidget):
         else:
             status = line
         head = "" if mine or not self.is_group else f'<span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b></span><br>'
+        ex = it.get("extra") or {}
         return (f'<table align="{side}" cellspacing="0" cellpadding="0" style="margin:6px 12px">'
-                f'<tr><td>{head}{pic}</td></tr>'
+                f'<tr><td><a name="m_{tid}"></a>{head}{pic}</td></tr>'
                 f'<tr><td align="{"left" if side == "right" else "right"}">'
-                f'<span style="color:#667781;font-size:8pt">{hhmm}</span> <span style="font-size:9pt">{status}</span>'
+                f'<span style="color:#667781;font-size:8pt">{self._star(ex)}{hhmm}</span> <span style="font-size:9pt">{status}</span>'
+                f'{self._menu_link(tid)}{self._reactions(ex, 10.5)}'
                 f'</td></tr></table><br clear="all">')
 
     def _link(self, url: QUrl):
         s = url.toString()
         if s.startswith("tda:"):
             _, action, tid = s.split(":", 2)
-            self.transfer_action.emit(action, tid)
+            if action == "menu":
+                from PySide6.QtGui import QCursor
+                self.message_menu(tid, QCursor.pos())
+            elif action == "goto":
+                self.view.scrollToAnchor("m_" + tid)
+                self._stick = False
+            else:
+                self.transfer_action.emit(action, tid)
         else:
             QDesktopServices.openUrl(url)
+
+    # ------------------------------------------------------------------ message pieces
+    @staticmethod
+    def _menu_link(mid: str, color: str = "#8696A0") -> str:
+        """The small ⌄ (like WhatsApp) that opens the message menu: react, reply, forward..."""
+        return (f' &nbsp;<a href="tda:menu:{mid}" style="color:{color};text-decoration:none;font-size:11pt">'
+                f'<b>⌄</b></a>')
+
+    @staticmethod
+    def _star(ex: dict) -> str:
+        return '<span style="color:#F59E0B">★</span> ' if ex.get("star") else ""
+
+    def _quote(self, reply, bg: str, pt: float) -> str:
+        """The message being answered, shown at the top of a reply (click: jump to it)."""
+        if not reply:
+            return ""
+        shade = QColor(bg).darker(112).name()
+        name = html.escape(reply.get("name") or "")
+        text = html.escape((reply.get("text") or "")[:160]).replace("\n", " ")
+        return (f'<table width="100%" cellspacing="0" cellpadding="6" style="background:{shade};margin-bottom:4px">'
+                f'<tr><td><a href="tda:goto:{reply.get("id", "")}" style="text-decoration:none">'
+                f'<span style="color:#0E8F6F;font-size:{pt - 2:.1f}pt"><b>{name}</b></span><br>'
+                f'<span style="color:#54656F;font-size:{pt - 1.5:.1f}pt">{text}</span></a></td></tr></table>')
+
+    @staticmethod
+    def _reactions(ex: dict, pt: float) -> str:
+        r = ex.get("reactions") or {}
+        if not r:
+            return ""
+        counts: dict = {}
+        for v in r.values():
+            e = v.get("e") if isinstance(v, dict) else v
+            if e:
+                counts[e] = counts.get(e, 0) + 1
+        if not counts:
+            return ""
+        chips = " ".join(f"{e}{'' if n == 1 else ' ' + str(n)}" for e, n in counts.items())
+        return (f'<br><span style="background:#FFFFFF;color:#54656F;font-size:{pt:.1f}pt">'
+                f'&nbsp;{chips}&nbsp;</span>')
+
+    def item(self, mid: str):
+        return next((it for it in self.items if it.get("id") == mid), None)
+
+    def snippet(self, it: dict) -> str:
+        """Short text describing a message (for a reply quote / forward)."""
+        if it.get("kind") == "file":
+            try:
+                d = json.loads(it.get("text") or "{}")
+            except ValueError:
+                d = {}
+            title = d.get("title", "")
+            if os.path.splitext(title)[1].lower() in IMAGE_EXT:
+                return "🖼 " + tr("photo")
+            return "📄 " + (title if not title.isdigit() else tr("files_n", n=title))
+        return (it.get("text") or "")[:200]
+
+    def message_menu(self, mid: str, gpos):
+        m = self.build_message_menu(mid)
+        if m is not None:
+            m.exec(gpos)
+
+    def build_message_menu(self, mid: str):
+        """WhatsApp-style menu: a row of reactions, then reply / copy / download / forward / star / delete."""
+        it = self.item(mid)
+        if not it or it.get("kind") not in ("msg", "file"):
+            return None
+        from PySide6.QtWidgets import QToolButton, QWidgetAction
+        m = QMenu(self)
+        m.setStyleSheet("QMenu{background:white;border:1px solid #E5E7EB;border-radius:12px;padding:6px}"
+                        "QMenu::item{padding:8px 26px;border-radius:6px;font-size:10.5pt}"
+                        "QMenu::item:selected{background:#F0F2F5}")
+        ex = it.get("extra") or {}
+        mine_reaction = (ex.get("reactions") or {}).get(self.my_id, {})
+        mine_reaction = mine_reaction.get("e") if isinstance(mine_reaction, dict) else mine_reaction
+        row = QWidget()
+        row.setStyleSheet("QToolButton{border:none;border-radius:17px;font-size:17pt;padding:2px}"
+                          "QToolButton:hover{background:#F0F2F5}"
+                          "QToolButton:checked{background:#D9FDD3}")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(6, 2, 6, 6)
+        rl.setSpacing(2)
+
+        def react(e):
+            m.close()
+            self.message_action.emit("react", mid, "" if e == mine_reaction else e)
+
+        for e in REACTIONS:
+            b = QToolButton()
+            b.setText(e)
+            b.setCheckable(True)
+            b.setChecked(e == mine_reaction)
+            b.setFixedSize(38, 38)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, x=e: react(x))
+            rl.addWidget(b)
+        more = QToolButton()
+        more.setText("+")
+        more.setFixedSize(38, 38)
+        more.setToolTip(tr("more_emojis"))
+        more.clicked.connect(lambda: (m.close(), self._emoji_grid(mid, mine_reaction)))
+        rl.addWidget(more)
+        wa = QWidgetAction(m)
+        wa.setDefaultWidget(row)
+        m.addAction(wa)
+        m.addSeparator()
+        if self.can_write:
+            m.addAction("↩  " + tr("reply"), lambda: self.start_reply(mid))
+        m.addAction("⧉  " + tr("copy"), lambda: self.copy_message(mid))
+        m.addAction("☺  " + tr("react"), lambda: self._emoji_grid(mid, mine_reaction))
+        if it.get("kind") == "file":
+            m.addAction("⤓  " + tr("download"), lambda: self.message_action.emit("download", mid, ""))
+        m.addAction("↪  " + tr("forward"), lambda: self.message_action.emit("forward", mid, ""))
+        m.addAction("☆  " + (tr("unstar") if ex.get("star") else tr("star")),
+                    lambda: self.message_action.emit("star", mid, "0" if ex.get("star") else "1"))
+        m.addSeparator()
+        m.addAction("🗑  " + tr("delete_me"), lambda: self.message_action.emit("delete_me", mid, ""))
+        if (it.get("outgoing") and it.get("kind") == "msg") or (self.is_group and self.is_admin):
+            a = m.addAction("🗑  " + tr("delete_all"), lambda: self.message_action.emit("delete_all", mid, ""))
+            a.setEnabled(it.get("kind") == "msg" or self.is_admin)
+        return m
+
+    def _emoji_grid(self, mid, current):
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QGridLayout, QToolButton, QWidgetAction
+        m = QMenu(self)
+        m.setStyleSheet("QMenu{background:white;border:1px solid #E5E7EB;border-radius:12px;padding:6px}")
+        w = QWidget()
+        w.setStyleSheet("QToolButton{border:none;border-radius:6px;font-size:17pt}"
+                        "QToolButton:hover{background:#F0F2F5}")
+        g = QGridLayout(w)
+        g.setSpacing(2)
+        for i, e in enumerate(MORE_EMOJIS):
+            b = QToolButton()
+            b.setText(e)
+            b.setFixedSize(40, 40)
+            b.clicked.connect(lambda _=False, x=e: (m.close(), self.message_action.emit(
+                "react", mid, "" if x == current else x)))
+            g.addWidget(b, i // 8, i % 8)
+        wa = QWidgetAction(m)
+        wa.setDefaultWidget(w)
+        m.addAction(wa)
+        m.exec(QCursor.pos())
+
+    def copy_message(self, mid):
+        from PySide6.QtCore import QMimeData
+        from PySide6.QtWidgets import QApplication
+        it = self.item(mid)
+        if not it:
+            return
+        if it.get("kind") == "file":
+            path = self.file_path(it)
+            md = QMimeData()
+            if path and os.path.exists(path):
+                md.setUrls([QUrl.fromLocalFile(path)])
+                if os.path.splitext(path)[1].lower() in IMAGE_EXT:
+                    img = QImage(path)
+                    if not img.isNull():
+                        md.setImageData(img)
+            md.setText(self.snippet(it))
+            QApplication.clipboard().setMimeData(md)
+        else:
+            QApplication.clipboard().setText(it.get("text") or "")
+
+    @staticmethod
+    def file_path(it) -> str:
+        """Local path of a sent / received file message ("" if not downloaded yet)."""
+        try:
+            d = json.loads(it.get("text") or "{}")
+        except ValueError:
+            return ""
+        return d.get("source", "") if it.get("outgoing") else d.get("open", "")
+
+    def start_reply(self, mid):
+        it = self.item(mid)
+        if not it:
+            return
+        name = tr("me") if it.get("outgoing") else (it.get("peer_name") or self.peer_name)
+        self.reply_to = {"id": mid, "name": name, "text": self.snippet(it)}
+        self.reply_lbl.setText(f'<span style="color:#0E8F6F"><b>{html.escape(name)}</b></span><br>'
+                               f'<span style="color:#54656F">{html.escape(self.reply_to["text"][:120])}</span>')
+        self.reply_bar.show()
+        self.input.setFocus()
+
+    def cancel_reply(self):
+        self.reply_to = None
+        self.reply_bar.hide()
+
+    def take_reply(self):
+        r = self.reply_to
+        self.cancel_reply()
+        return r
+
+    def update_extra(self, mid, extra: dict) -> bool:
+        it = self.item(mid)
+        if it is None:
+            return False
+        it["extra"] = extra
+        self.schedule_render()
+        return True
+
+    def remove_item(self, mid):
+        self.items = [it for it in self.items if it.get("id") != mid]
+        self.schedule_render()
 
     # ------------------------------------------------------------------ actions
     def _submit(self):
