@@ -1,0 +1,25 @@
+1 ICON "tda.ico"
+1 24 "app.manifest"
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "TDA Open Source Project"
+      VALUE "FileDescription", "TDA LAN Messenger"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "InternalName", "TDA"
+      VALUE "LegalCopyright", "MIT License"
+      VALUE "OriginalFilename", "TDA.exe"
+      VALUE "ProductName", "TDA"
+      VALUE "ProductVersion", "1.0.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
