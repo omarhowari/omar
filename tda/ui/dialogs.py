@@ -30,9 +30,13 @@ def open_path(path: str):
 class SettingsDialog(QDialog):
     branding_changed = Signal()
 
-    def __init__(self, s: Settings, parent=None):
+    update_requested = Signal()              # "look for an update" pressed
+    install_file = Signal(str)               # an installer chosen from a file
+
+    def __init__(self, s: Settings, parent=None, core=None):
         super().__init__(parent)
         self.s = s
+        self.core = core
         self.setWindowTitle(tr("settings"))
         self.setMinimumWidth(520)
 
@@ -92,7 +96,7 @@ class SettingsDialog(QDialog):
         f3.addRow(self.autostart)
         f3.addRow(self.auto_images)
 
-        g5 = QGroupBox(tr("chat_background"))
+        g5 = QGroupBox(tr("appearance"))
         f5 = QFormLayout(g5)
         self.bg_mode = QComboBox()
         for key, label in (("pattern", tr("bg_pattern")), ("image", tr("bg_image")), ("none", tr("bg_none"))):
@@ -113,6 +117,29 @@ class SettingsDialog(QDialog):
         f5.addRow(tr("chat_background"), self.bg_mode)
         f5.addRow(tr("bg_image"), img_row)
         f5.addRow(tr("bg_opacity"), op_row)
+        # message bubbles
+        self.c_me, self.c_them = s.bubble_me, s.bubble_them
+        self.b_me, self.b_them = QPushButton(), QPushButton()
+        self.b_me.clicked.connect(lambda: self._pick_color("me"))
+        self.b_them.clicked.connect(lambda: self._pick_color("them"))
+        from PySide6.QtWidgets import QDoubleSpinBox
+        self.font_pt = QDoubleSpinBox(minimum=8.0, maximum=20.0, singleStep=0.5, value=float(s.font_pt), suffix=" pt")
+        self.border = QCheckBox(tr("bubble_border"), checked=s.bubble_border)
+        self.preview = QTextBrowser()
+        self.preview.setFixedHeight(128)
+        self.preview.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.font_pt.valueChanged.connect(self._preview)
+        self.border.toggled.connect(self._preview)
+        f5.addRow(tr("bubble_me"), self.b_me)
+        f5.addRow(tr("bubble_them"), self.b_them)
+        f5.addRow(tr("font_size"), self.font_pt)
+        f5.addRow(self.border)
+        f5.addRow(tr("bubble_preview"), self.preview)
+        self._preview()
+        if s.theme_lock:
+            for w in g5.findChildren(QWidget):
+                w.setEnabled(False)
+            f5.insertRow(0, QLabel(tr("theme_locked"), wordWrap=True, styleSheet="color:#B45309"))
 
         g4 = QGroupBox(tr("branding"))
         f4 = QHBoxLayout(g4)
@@ -120,6 +147,30 @@ class SettingsDialog(QDialog):
         brand_btn.clicked.connect(self._open_branding)
         f4.addWidget(brand_btn)
         f4.addWidget(QLabel(tr("branding_hint"), objectName="Muted"), 1)
+
+        # advanced (hidden until asked for): updates + share the app
+        from .. import updates
+        self.adv_btn = QPushButton(tr("advanced_show"), flat=True)
+        self.adv_btn.setStyleSheet("color:#6B7280;text-align:left")
+        g6 = QGroupBox(tr("advanced"))
+        f6 = QVBoxLayout(g6)
+        self.update_auto = QCheckBox(tr("update_auto"), checked=s.update_auto)
+        up_btn = QPushButton(tr("update_check"))
+        up_btn.clicked.connect(self.update_requested.emit)
+        file_btn = QPushButton(tr("update_from_file"))
+        file_btn.clicked.connect(self._update_file)
+        share_btn = QPushButton(tr("share_app"), objectName="Primary")
+        share_btn.clicked.connect(self._share_app)
+        f6.addWidget(QLabel(f"<b>{tr('updates')}</b> — TDA {APP_VERSION}"))
+        f6.addWidget(self.update_auto)
+        r6 = QHBoxLayout()
+        r6.addWidget(up_btn)
+        r6.addWidget(file_btn)
+        f6.addLayout(r6)
+        f6.addWidget(share_btn)
+        g6.setVisible(False)
+        self.adv_box = g6
+        self.adv_btn.clicked.connect(lambda: (g6.setVisible(True), self.adv_btn.setVisible(False)))
 
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Ok).setText(tr("ok"))
@@ -130,7 +181,7 @@ class SettingsDialog(QDialog):
         from PySide6.QtWidgets import QScrollArea
         body = QWidget()
         bl = QVBoxLayout(body)
-        for w in (g1, g2, g3, g5, g4):
+        for w in (g1, g2, g3, g5, g4, self.adv_btn, g6):
             bl.addWidget(w)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -141,6 +192,52 @@ class SettingsDialog(QDialog):
         lay.addWidget(bb)
         self.resize(580, 640)
 
+    def _pick_color(self, which: str):
+        from PySide6.QtWidgets import QColorDialog
+        from PySide6.QtGui import QColor
+        cur = QColor(self.c_me if which == "me" else self.c_them)
+        c = QColorDialog.getColor(cur, self, tr("bubble_me" if which == "me" else "bubble_them"))
+        if c.isValid():
+            if which == "me":
+                self.c_me = c.name()
+            else:
+                self.c_them = c.name()
+            self._preview()
+
+    def _preview(self, *_):
+        from .chat import ChatWidget
+        for b, c in ((self.b_me, self.c_me), (self.b_them, self.c_them)):
+            b.setText(c.upper())
+            b.setStyleSheet(f"background:{c};border:1px solid #CBD5E1;padding:5px 18px")
+        saved = ChatWidget.APPEARANCE
+        ChatWidget.set_appearance(self.c_me, self.c_them, self.font_pt.value(), self.border.isChecked())
+        rtl = self.layoutDirection() == Qt.LayoutDirection.RightToLeft
+        out = []
+        for mine, key in ((False, "preview_them"), (True, "preview_me")):
+            bg, fg, border, pt = ChatWidget._bubble(ChatWidget, mine)
+            side = ("left" if mine else "right") if rtl else ("right" if mine else "left")
+            out.append(f'<table align="{side}" cellpadding="8" style="background:{bg};{border};margin:3px">'
+                       f'<tr><td><span style="color:{fg["text"]};font-size:{pt:.1f}pt">{tr(key)}</span> '
+                       f'<span style="color:{fg["muted"]};font-size:{pt - 2.5:.1f}pt">10:30</span></td></tr></table>'
+                       f'<br clear="all">')
+        ChatWidget.APPEARANCE = saved
+        self.preview.setHtml("".join(out))
+        self.preview.setStyleSheet("background:#EFE7DD")
+
+    def _update_file(self):
+        from .. import updates
+        path, _ = QFileDialog.getOpenFileName(self, tr("update_from_file"), "", "TDA-Setup (*.exe)")
+        if not path:
+            return
+        if not updates.looks_like_installer(path):
+            QMessageBox.warning(self, APP_NAME, tr("update_bad_file"))
+            return
+        self.install_file.emit(path)
+
+    def _share_app(self):
+        from .share_app import ShareAppDialog
+        ShareAppDialog(self.core, self).exec()
+
     def _browse_bg(self):
         path, _ = QFileDialog.getOpenFileName(self, tr("bg_image"), "", f"{tr('images')} (*.png *.jpg *.jpeg *.bmp *.webp)")
         if path:
@@ -150,8 +247,8 @@ class SettingsDialog(QDialog):
     def _open_branding(self):
         if not admin_unlock(self.s, self):
             return
-        dlg = BrandingDialog(self.s, self)
-        if dlg.exec():
+        dlg = BrandingDialog(self.s, self, core=self.core)
+        if dlg.exec() or dlg.published:
             self.branding_changed.emit()
 
     def _browse(self):
@@ -179,12 +276,18 @@ class SettingsDialog(QDialog):
         s.chat_bg = self.bg_mode.currentData()
         s.chat_bg_image = self.bg_image.text().strip()
         s.chat_bg_opacity = self.bg_opacity.value()
+        if not s.theme_lock:
+            s.bubble_me, s.bubble_them = self.c_me, self.c_them
+            s.font_pt = round(self.font_pt.value(), 1)
+            s.bubble_border = self.border.isChecked()
+        s.update_auto = self.update_auto.isChecked()
         s.save()
         return restart
 
 
 # ============================================================================ admin password + branding
 _failed: list = []
+_admin_pw: list = []          # the admin password typed in this session (kept in memory only)
 
 
 def _ask_password(parent, label: str) -> str | None:
@@ -212,6 +315,7 @@ def _create_password(s: Settings, parent, title_key="admin_pw_create_text") -> b
             QMessageBox.warning(parent, APP_NAME, tr("admin_pw_mismatch"))
             continue
         branding.set_admin_password(s, pw)
+        _admin_pw[:] = [pw]
         QMessageBox.information(parent, APP_NAME, tr("admin_pw_saved"))
         return True
 
@@ -230,6 +334,7 @@ def admin_unlock(s: Settings, parent) -> bool:
         return False
     if branding.check_admin_password(s, pw):
         _failed.clear()
+        _admin_pw[:] = [pw]
         return True
     _failed.append(now)
     QMessageBox.warning(parent, APP_NAME, tr("admin_pw_wrong"))
@@ -239,9 +344,11 @@ def admin_unlock(s: Settings, parent) -> bool:
 class BrandingDialog(QDialog):
     """Logo, welcome picture and displayed name. Changes are applied on OK."""
 
-    def __init__(self, s: Settings, parent=None):
+    def __init__(self, s: Settings, parent=None, core=None):
         super().__init__(parent)
         self.s = s
+        self.core = core
+        self.published = False
         self.new_logo: str | None = None      # path chosen, "" = restore default, None = unchanged
         self.new_welcome: str | None = None
         self.setWindowTitle(tr("branding"))
@@ -306,10 +413,24 @@ class BrandingDialog(QDialog):
         bottom.addStretch(1)
         bottom.addWidget(bb)
 
+        # publish to everybody
+        g4 = QGroupBox(tr("theme_publish_box"))
+        f4 = QVBoxLayout(g4)
+        f4.addWidget(QLabel(tr("theme_publish_hint"), objectName="Muted", wordWrap=True))
+        self.lock = QCheckBox(tr("theme_lock_users"), checked=s.theme_lock)
+        pub = QPushButton(tr("theme_publish_btn"), objectName="Primary")
+        pub.clicked.connect(self._publish)
+        pub.setEnabled(core is not None)
+        r4 = QHBoxLayout()
+        r4.addWidget(self.lock, 1)
+        r4.addWidget(pub)
+        f4.addLayout(r4)
+
         lay = QVBoxLayout(self)
         lay.addWidget(g1)
         lay.addWidget(g2)
         lay.addWidget(g3)
+        lay.addWidget(g4)
         lay.addLayout(bottom)
         self._refresh()
 
@@ -367,20 +488,54 @@ class BrandingDialog(QDialog):
         self.new_welcome = p
         self._refresh()
 
+    def _publish(self):
+        if not self._store():
+            return
+        pw = _admin_pw[0] if _admin_pw else None
+        if pw is None:
+            pw = _ask_password(self, tr("admin_pw_enter"))
+            if pw is None:
+                return
+            if not branding.check_admin_password(self.s, pw):
+                QMessageBox.warning(self, APP_NAME, tr("admin_pw_wrong"))
+                return
+            _admin_pw[:] = [pw]
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "c_me"):      # take the bubble colours being edited too
+            self.s.bubble_me, self.s.bubble_them = parent.c_me, parent.c_them
+            self.s.font_pt, self.s.bubble_border = round(parent.font_pt.value(), 1), parent.border.isChecked()
+            self.s.chat_bg, self.s.chat_bg_image = parent.bg_mode.currentData(), parent.bg_image.text().strip()
+            self.s.chat_bg_opacity = parent.bg_opacity.value()
+        pkg = self.core.publish_theme(pw, self.lock.isChecked())
+        if pkg is None:
+            QMessageBox.warning(self, APP_NAME, tr("theme_publish_bad_pw"))
+            return
+        self.published = True
+        # the publisher itself is never locked out of its own settings
+        self.s.theme_lock = False
+        self.s.save()
+        QMessageBox.information(self, APP_NAME, tr("theme_published", v=pkg["theme"]["v"]))
+        self.accept()
+
     def _save(self):
+        if self._store():
+            self.accept()
+
+    def _store(self) -> bool:
         if self.new_logo == "":
             branding.remove_logo()
         elif self.new_logo and not branding.install_logo(self.new_logo):
             QMessageBox.warning(self, APP_NAME, tr("bad_image"))
-            return
+            return False
         if self.new_welcome == "":
             branding.remove_welcome()
         elif self.new_welcome and not branding.install_welcome(self.new_welcome):
             QMessageBox.warning(self, APP_NAME, tr("bad_image"))
-            return
+            return False
+        self.new_logo = self.new_welcome = None
         self.s.app_title = self.title.text().strip()[:60]
         self.s.save()
-        self.accept()
+        return True
 
 
 # ============================================================================ broadcast

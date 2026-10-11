@@ -215,6 +215,70 @@ pump(0.3)
 a.grab().save(str(out / f"screen_{lang}_main.png"))
 
 b.grab().save(str(out / f"screen_{lang}_peer.png"))
+
+# --- group administration: B made admin, Khaled frozen from writing
+kid = wins[2].s.user_id
+a.core.update_group(gid, admins_add=[bid])
+a.core.update_group(gid, restrict={kid: {"write": True, "media": True, "call": False}})
+pump(1.5)
+assert not wins[2].core.can(gid, "write")
+from tda.ui.group_info import GroupInfoDialog
+gi = GroupInfoDialog(a.core, gid, a._people(), parent=a)
+gi.show(); pump(0.4)
+gi.grab().save(str(out / f"screen_{lang}_group_admin.png"))
+gi.close()
+kw = wins[2]
+kw.resize(900, 600); kw.show()
+kw.open_chat("g:" + gid)
+pump(0.6)
+kw.grab().save(str(out / f"screen_{lang}_group_frozen.png"))
+print("group admin ui ok")
+
+# --- what to share during a call
+from tda.ui.share_picker import SharePickerDialog
+sp = SharePickerDialog(a)
+sp.show(); pump(0.4)
+sp.grab().save(str(out / f"screen_{lang}_share_picker.png"))
+sp.close()
+
+# --- appearance published by the administrator reaches B, then settings / branding / share windows
+a.s.bubble_me, a.s.bubble_them, a.s.font_pt = "#CDE8FF", "#FFF7E0", 11.5
+pkg = a.core.publish_theme("admin-pass", lock=True)
+assert pkg
+pump(4)
+assert b.s.bubble_me == "#CDE8FF" and b.s.theme_lock, (b.s.bubble_me, b.s.theme_lock)
+b.open_chat(a.s.user_id)
+pump(0.5)
+b.grab().save(str(out / f"screen_{lang}_theme_applied.png"))
+from tda.ui.dialogs import BrandingDialog, SettingsDialog
+sd = SettingsDialog(b.s, b, core=b.core)
+sd.adv_btn.click()
+sd.resize(600, 1500); sd.show(); pump(0.4)
+sd.grab().save(str(out / f"screen_{lang}_settings_locked.png"))
+sd.close()
+sd = SettingsDialog(a.s, a, core=a.core)
+sd.adv_btn.click()
+sd.resize(600, 1500); sd.show(); pump(0.4)
+sd.grab().save(str(out / f"screen_{lang}_settings.png"))
+bd = BrandingDialog(a.s, sd, core=a.core)
+bd.show(); pump(0.3)
+bd.grab().save(str(out / f"screen_{lang}_branding_publish.png"))
+bd.close(); sd.close()
+import tda.ui.share_app as _sa
+from PySide6.QtWidgets import QMessageBox
+QMessageBox.information = staticmethod(lambda *x, **k: 0)
+fake_setup = tmp / "TDA-Setup.exe"
+fake_setup.write_bytes(b"MZ" + bytes(5_000_000))
+_sa.updates.update_package = lambda: fake_setup
+sh = _sa.ShareAppDialog(a.core, a)
+sh.show(); pump(0.3)
+sh.grab().save(str(out / f"screen_{lang}_share_app.png"))
+sh.close()
+# --- a colleague with a newer version -> update bar
+a.on_update_available("1.6.0", bid)
+pump(0.3)
+a.grab().save(str(out / f"screen_{lang}_update_bar.png"))
+print("appearance / settings / share / update ui ok")
 print("UI SMOKE OK", [p.name for p in a.core.peers.values()])
 for w in wins:
     w.quit()

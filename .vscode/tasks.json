@@ -1,0 +1,10 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "Build TDA-Setup.exe", "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1 -Out dist",
+      "group": { "kind": "build", "isDefault": true }, "problemMatcher": [] },
+    { "label": "Install requirements", "type": "shell", "command": "python -m pip install -r requirements-dev.txt",
+      "problemMatcher": [] }
+  ]
+}

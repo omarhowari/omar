@@ -4,3 +4,10 @@ build/
 dist/
 *.spec.bak
 .venv/
+.profile2/
+.shots/
+dist/
+.vs/
+*.pyproj.user
+branded_main.png
+branding_dialog.png

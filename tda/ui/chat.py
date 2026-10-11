@@ -142,7 +142,31 @@ class MessageInput(QPlainTextEdit):
         super().keyPressEvent(e)
 
 
+def _is_dark(color: str) -> bool:
+    c = QColor(color)
+    return c.isValid() and (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) < 140
+
+
 class ChatWidget(QWidget):
+    # message bubble appearance, shared by all chats (settings or the administrator's published look)
+    APPEARANCE = {"me": "#D9FDD3", "them": "#FFFFFF", "pt": 10.5, "border": True}
+
+    @classmethod
+    def set_appearance(cls, me: str, them: str, pt: float, border: bool):
+        cls.APPEARANCE = {"me": me if QColor(me).isValid() else "#D9FDD3",
+                          "them": them if QColor(them).isValid() else "#FFFFFF",
+                          "pt": max(8.0, min(20.0, float(pt or 10.5))), "border": bool(border)}
+
+    def _bubble(self, mine: bool):
+        a = self.APPEARANCE
+        bg = a["me"] if mine else a["them"]
+        if _is_dark(bg):
+            fg = {"text": "#F9FAFB", "name": "#FDE68A", "muted": "#D1D5DB"}
+        else:
+            fg = {"text": "#111827", "name": ACCENT, "muted": "#9CA3AF"}
+        border = "border:1px solid #D1D5DB" if a["border"] else "border:0px"
+        return bg, fg, border, a["pt"]
+
     send_text = Signal(str, str)        # peer_id, text
     send_paths = Signal(str, list)      # peer_id, [paths]
     start_call = Signal(str)            # peer_id
@@ -357,7 +381,7 @@ class ChatWidget(QWidget):
                              f'<span style="color:#9CA3AF">{hhmm}</span>  ·  {emb}📎 {html.escape(it["text"])}\u202c</p>')
                 continue
             mine = bool(it.get("outgoing"))
-            bg = "#D1FAE5" if mine else "#FFFFFF"
+            bg, fg, border, pt = self._bubble(mine)
             who = tr("me") if mine else html.escape(it.get("peer_name") or self.peer_name)
             tick = ""
             if mine:
@@ -372,10 +396,10 @@ class ChatWidget(QWidget):
                           f'text-decoration:none">🗑</a>')
             parts.append(
                 f'<table align="{mine_side if mine else theirs_side}" cellspacing="0" cellpadding="9" '
-                f'style="background:{bg};margin:4px 10px;border:1px solid #E5E7EB">'
-                f'<tr><td><span style="color:{ACCENT};font-size:8.5pt"><b>{who}</b>{multi}</span>'
-                f'<span style="color:#9CA3AF;font-size:8pt">  {hhmm}</span>{tick}<br>'
-                f'<span style="font-size:10.5pt;color:#111827">{_render_text(it.get("text", ""))}</span>'
+                f'style="background:{bg};margin:4px 10px;{border}">'
+                f'<tr><td><span style="color:{fg["name"]};font-size:{pt - 2:.1f}pt"><b>{who}</b>{multi}</span>'
+                f'<span style="color:{fg["muted"]};font-size:{pt - 2.5:.1f}pt">  {hhmm}</span>{tick}<br>'
+                f'<span style="font-size:{pt:.1f}pt;color:{fg["text"]}">{_render_text(it.get("text", ""))}</span>'
                 f'</td></tr></table><br clear="all">')
         sb = self.view.verticalScrollBar()
         old = sb.value()
@@ -451,7 +475,7 @@ class ChatWidget(QWidget):
                 if not img.isNull():
                     w = min(240, img.width())
                     thumb = f'<br><a href="tda:open:{tid}"><img src="{QUrl.fromLocalFile(src).toString()}" width="{w}"></a>'
-        bg = "#E7F3EE" if mine else "#FFFFFF"
+        bg, _fg, _border, _pt = self._bubble(mine)
         who = tr("me") if mine else html.escape(it.get("peer_name") or self.peer_name)
         emb = "\u202b" if lang() == "ar" else "\u202a"
         if n == 1 and not d.get("is_dir") and os.path.splitext(title)[1].lower() in IMAGE_EXT:

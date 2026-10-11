@@ -65,6 +65,14 @@ class Settings:
     chat_bg_image: str = ""
     chat_bg_opacity: int = 80               # 0..100
     auto_images: bool = True                # accept incoming pictures automatically (like WhatsApp)
+    bubble_me: str = "#D9FDD3"              # colour of my message bubbles
+    bubble_them: str = "#FFFFFF"            # colour of the other person's bubbles
+    bubble_border: bool = True              # thin outline around the bubbles
+    font_pt: float = 10.5                   # chat text size
+    theme_version: int = 0                  # version of the administrator's published appearance
+    theme_lock: bool = False                # the administrator locked the appearance
+    theme_pin: str = ""                     # public key of the administrator (trusted on first use)
+    update_auto: bool = True                # tell me when a colleague has a newer TDA
 
     @classmethod
     def path(cls) -> Path:

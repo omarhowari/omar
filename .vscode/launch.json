@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    { "name": "TDA", "type": "debugpy", "request": "launch", "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal" },
+    { "name": "TDA (second copy, test profile)", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/main.py", "cwd": "${workspaceFolder}",
+      "env": { "TDA_CONFIG_DIR": "${workspaceFolder}/.profile2" }, "console": "integratedTerminal" },
+    { "name": "Test: network", "type": "debugpy", "request": "launch", "module": "tests.test_network",
+      "cwd": "${workspaceFolder}", "env": { "QT_QPA_PLATFORM": "offscreen" } },
+    { "name": "Test: updates + appearance", "type": "debugpy", "request": "launch", "module": "tests.test_update",
+      "cwd": "${workspaceFolder}", "env": { "QT_QPA_PLATFORM": "offscreen" } },
+    { "name": "UI screenshots (ar)", "type": "debugpy", "request": "launch", "module": "tests.ui_smoke",
+      "args": ["ar", "${workspaceFolder}/.shots"], "cwd": "${workspaceFolder}" }
+  ]
+}

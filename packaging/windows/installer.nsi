@@ -1,9 +1,11 @@
 ; NSIS installer for TDA (built by build_portable.sh)
 Unicode true
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
+!include "Sections.nsh"
 
 !define APPNAME "TDA"
-!define VERSION "1.4.1"
+!define VERSION "1.5.0"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\TDA"
 
 Name "${APPNAME}"
@@ -37,22 +39,27 @@ LangString SecDesktop ${LANG_ENGLISH} "Desktop shortcut"
 LangString SecStartup ${LANG_ARABIC} "التشغيل مع بدء Windows"
 LangString SecStartup ${LANG_ENGLISH} "Start with Windows"
 
-VIProductVersion "1.4.1.0"
+VIProductVersion "1.5.0.0"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "TDA"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "TDA LAN Messenger Setup"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "MIT License"
 
-Function .onInit
-  !insertmacro MUI_LANGDLL_DISPLAY
-FunctionEnd
-
 Section "TDA" SecMain
   SectionIn RO
   ; close a running copy so files can be replaced
   nsExec::Exec 'taskkill /f /im TDA.exe'
+  Sleep 700
+  ; update in place: replace the program files (settings/history live in %APPDATA%\TDA and are kept)
+  RMDir /r "$INSTDIR\app"
+  RMDir /r "$INSTDIR\Lib"
   SetOutPath "$INSTDIR"
   File /r "${SRC}\*.*"
+  ; keep this installer: TDA gives it to colleagues (LAN updates + "Share the app")
+  CreateDirectory "$INSTDIR\setup"
+  ${If} "$EXEPATH" != "$INSTDIR\setup\TDA-Setup.exe"
+    CopyFiles /SILENT "$EXEPATH" "$INSTDIR\setup\TDA-Setup.exe"
+  ${EndIf}
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "Software\TDA" "InstallDir" "$INSTDIR"
 
@@ -75,11 +82,39 @@ SectionEnd
 
 Section "$(SecDesktop)" SecDesk
   CreateShortcut "$DESKTOP\TDA.lnk" "$INSTDIR\TDA.exe"
+  WriteRegStr HKLM "Software\TDA" "Desktop" "1"
 SectionEnd
 
 Section "$(SecStartup)" SecRun
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "TDA" '"$INSTDIR\TDA.exe" --minimized'
+  WriteRegStr HKLM "Software\TDA" "Startup" "1"
 SectionEnd
+
+Function .onInit
+  ${If} ${Silent}
+    ; silent update (TDA-Setup.exe /S): keep the choices made at the first installation
+    ReadRegStr $0 HKLM "Software\TDA" "InstallDir"
+    ${If} $0 != ""
+      ReadRegStr $1 HKLM "Software\TDA" "Desktop"
+      ${If} $1 != "1"
+        !insertmacro UnselectSection ${SecDesk}
+      ${EndIf}
+      ReadRegStr $1 HKLM "Software\TDA" "Startup"
+      ${If} $1 != "1"
+        !insertmacro UnselectSection ${SecRun}
+      ${EndIf}
+    ${EndIf}
+  ${Else}
+    !insertmacro MUI_LANGDLL_DISPLAY
+  ${EndIf}
+FunctionEnd
+
+Function .onInstSuccess
+  ${If} ${Silent}
+    ; start the new version again as the normal (not elevated) user
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\TDA.exe"'
+  ${EndIf}
+FunctionEnd
 
 Section "Uninstall"
   nsExec::Exec 'taskkill /f /im TDA.exe'

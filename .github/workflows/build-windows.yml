@@ -1,8 +1,10 @@
 name: Build Windows
 
-# Manual only: the published installer is built with packaging/windows/build_portable.sh
+# Manual (Actions -> Build Windows -> Run workflow) or on a version tag (v1.5.0 ...)
 on:
   workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -15,31 +17,29 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt pyinstaller
-
-      - name: Network self-test
+      - name: Tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m tests.test_network
-
-      - name: Build TDA.exe
-        run: python -m PyInstaller --noconfirm --clean --windowed --name TDA --icon assets\tda.ico --add-data "assets;assets" --exclude-module tkinter main.py
-
-      - name: Build installer
-        shell: pwsh
         run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\TDA.iss
-          Compress-Archive -Path dist\TDA -DestinationPath dist\TDA-portable.zip
+          python -m pip install -r requirements-dev.txt
+          python -m tests.test_groups
+          python -m tests.test_network
+          python -m tests.test_update
+
+      - name: NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build TDA.exe + TDA-Setup.exe (Visual Studio compiler)
+        shell: pwsh
+        run: packaging\windows\build_windows.ps1 -Out dist
 
       - uses: actions/upload-artifact@v4
         with:
           name: TDA-windows
           path: |
-            dist/TDA-Setup-*.exe
+            dist/TDA-Setup.exe
             dist/TDA-portable.zip
 
       - name: Publish release
@@ -47,5 +47,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/TDA-Setup-*.exe
+            dist/TDA-Setup.exe
             dist/TDA-portable.zip

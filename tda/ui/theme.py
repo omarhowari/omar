@@ -160,9 +160,11 @@ QPushButton#Primary:disabled {{ background: #CBD5E1; color: #F8FAFC; }}
 QPlainTextEdit#Compose {{ background: transparent; border: none; padding: 8px 4px; font-size: 10.5pt; }}
 QPushButton#SendRound {{ background: {ACCENT}; border: none; border-radius: 22px; padding: 0; }}
 QPushButton#SendRound:hover {{ background: {ACCENT_DARK}; }}
+QPushButton#SendRound:disabled {{ background: #CBD5E1; }}
 QPushButton#Attach {{ font-size: 16pt; background: transparent; border: none; border-radius: 20px; padding: 0; color: #54656F; }}
 QPushButton#Attach:hover {{ background: #F0F2F5; }}
 QPushButton#Attach::menu-indicator {{ image: none; width: 0; }}
+QPushButton#Attach:disabled {{ color: #CBD5E1; }}
 QMenu {{ background: white; border: 1px solid #D1D5DB; padding: 4px; }}
 QMenu::item {{ padding: 8px 22px; border-radius: 6px; font-size: 10.5pt; }}
 QMenu::item:selected {{ background: {ACCENT_SOFT}; color: #111827; }}

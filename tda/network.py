@@ -25,6 +25,7 @@ from . import APP_VERSION, PROTOCOL_VERSION
 from .config import Settings
 from .crypto import Cipher
 from . import groups as G
+from . import theme_share, updates
 from .protocol import (CHUNK_SIZE, FrameBuffer, ProtocolError, encode_bin,
                        encode_json, safe_relpath)
 
@@ -50,6 +51,8 @@ class Peer:
     version: str = ""
     last_seen: float = 0.0
     iv: float = ANNOUNCE_MIN_S          # the peer's announce interval
+    upd: bool = False                   # can give us its installer (in-place update)
+    thv: int = 0                        # version of the administrator's appearance it has
 
     @property
     def timeout(self) -> float:
@@ -73,6 +76,7 @@ class Transfer:
     dest_root: str = ""
     started: float = 0.0
     gid: str = ""                      # group the files were shared in ("" = private chat)
+    purpose: str = ""                  # "" = user files | "update" = installer of a newer TDA
 
     @property
     def finished(self) -> bool:
@@ -429,6 +433,11 @@ class NetworkCore(QObject):
     group_updated = Signal(str)            # gid
     group_removed = Signal(str)            # gid
     group_message_deleted = Signal(str, str, str)   # gid, msg id, deleted by (user id)
+    update_available = Signal(str, str)    # newer version, peer id that has it
+    update_progress = Signal(int, int)     # bytes done, total
+    update_ready = Signal(str, str)        # installer path, version
+    update_failed = Signal(str)
+    theme_applied = Signal(dict)           # the administrator's appearance arrived and was applied
 
     def __init__(self, settings: Settings, parent: Optional[QObject] = None, data_dir=None):
         super().__init__(parent)
@@ -454,6 +463,13 @@ class NetworkCore(QObject):
         self.prune_timer = QTimer(self, interval=3000)
         self.prune_timer.timeout.connect(self._prune)
         self.running = False
+        self.version = APP_VERSION              # (tests may pretend another version)
+        self.update_package = updates.update_package
+        self._update_seen: set = set()          # versions already offered to the user
+        self._update_from: Dict[str, float] = {}  # peer id -> time we asked it for its installer
+        self._update_tid = ""
+        self._theme_asked: Dict[tuple, float] = {}
+        self.transfer_changed.connect(self._update_transfer_changed)
 
     # ---------------------------------------------------------------- lifecycle
     def start(self) -> bool:
@@ -502,8 +518,9 @@ class NetworkCore(QObject):
         s = self.settings
         return {"t": kind, "id": s.user_id, "name": s.name, "group": s.group, "status": s.status,
                 "port": s.tcp_port, "host": socket.gethostname(),
-                "os": f"{platform.system()} {platform.release()}", "v": APP_VERSION, "pv": PROTOCOL_VERSION,
-                "iv": round(self.announce_interval(), 1)}
+                "os": f"{platform.system()} {platform.release()}", "v": self.version, "pv": PROTOCOL_VERSION,
+                "iv": round(self.announce_interval(), 1),
+                "upd": 1 if self.update_package() else 0, "thv": int(s.theme_version or 0)}
 
     def announce_interval(self) -> float:
         """Grows with the number of users so 1000+ computers do not flood the LAN."""
@@ -582,13 +599,21 @@ class NetworkCore(QObject):
                 iv = min(120.0, max(1.0, float(msg.get("iv", ANNOUNCE_MIN_S))))
             except (TypeError, ValueError):
                 continue
-            if old and (old.name, old.group, old.status, old.host, old.tcp_port) == (name, group, status, host, port):
+            version = str(msg.get("v", ""))[:16]
+            upd = bool(msg.get("upd"))
+            try:
+                thv = int(msg.get("thv", 0))
+            except (TypeError, ValueError):
+                thv = 0
+            if old and (old.name, old.group, old.status, old.host, old.tcp_port, old.version, old.upd, old.thv) == \
+                    (name, group, status, host, port, version, upd, thv):
                 old.last_seen, old.iv = time.time(), iv          # fast path: nothing changed
                 continue
             peer = Peer(id=pid, name=name, group=group, status=status, host=host, tcp_port=port,
                         hostname=str(msg.get("host", ""))[:64], os=str(msg.get("os", ""))[:64],
-                        version=str(msg.get("v", ""))[:16], last_seen=time.time(), iv=iv)
+                        version=version, last_seen=time.time(), iv=iv, upd=upd, thv=thv)
             self.peers[pid] = peer
+            self._check_peer_news(peer)
             if is_new and kind == "hello":
                 # answer the newcomer directly; a random delay spreads 1000 replies over ~1.5 s
                 addr, prt = QHostAddress(dg.senderAddress()), dg.senderPort()
@@ -683,6 +708,16 @@ class NetworkCore(QObject):
             if tid in self.transfers:
                 conn.reply({"type": "ack"})
                 return
+            purpose = str(obj.get("purpose", ""))
+            if purpose == "update":
+                # only an installer we asked for, and only one file
+                if time.time() - self._update_from.get(sender, 0) > 120 or len(files) != 1 \
+                        or files[0]["size"] > updates.MAX_SETUP:
+                    conn.reply({"type": "ack"})
+                    return
+            elif purpose:
+                conn.reply({"type": "ack"})
+                return
             ogid = str(obj.get("gid", ""))[:64]
             if ogid and ogid in self.groups and not G.can(self.groups[ogid], sender, "media"):
                 conn.reply({"type": "ack"})          # restricted from sending media in this group: drop
@@ -690,9 +725,13 @@ class NetworkCore(QObject):
             tr = Transfer(tid=tid, direction="in", peer_id=sender,
                           peer_name=peer.name if peer else str(obj.get("from_name", "?")), files=files,
                           total=sum(f["size"] for f in files), title=str(obj.get("title", ""))[:200],
-                          gid=str(obj.get("gid", ""))[:64])
+                          gid=str(obj.get("gid", ""))[:64], purpose=purpose)
             self.transfers[tid] = tr
             conn.reply({"type": "ack"})
+            if purpose == "update":
+                self._update_from.pop(sender, None)
+                self._accept_update(tr)
+                return
             self.transfer_added.emit(tid)
         elif t in ("file_accept", "file_reject", "file_cancel"):
             tid = str(obj.get("tid"))
@@ -724,6 +763,19 @@ class NetworkCore(QObject):
             conn.reply({"type": "ack"})
             if peer is not None:
                 self.call_message.emit(sender, obj)
+        elif t == "update_req":
+            conn.reply({"type": "ack"})
+            pkg = self.update_package()
+            if pkg and peer is not None:
+                self.offer_files(sender, [str(pkg)], purpose="update")
+        elif t == "theme_req":
+            conn.reply({"type": "ack"})
+            pkg = self.theme_package()
+            if pkg and peer is not None:
+                self._request(sender, {"type": "theme", "pkg": pkg})
+        elif t == "theme":
+            conn.reply({"type": "ack"})
+            self.receive_theme(obj.get("pkg"))
         elif t == "ping":
             conn.reply({"type": "ack"})
         else:
@@ -817,7 +869,8 @@ class NetworkCore(QObject):
         return len(self.store.pending(peer_id))
 
     # ---------------------------------------------------------------- files (queued when offline)
-    def offer_files(self, peer_id: str, paths: List[str], gid: str = "", peer_name: str = "") -> Optional[str]:
+    def offer_files(self, peer_id: str, paths: List[str], gid: str = "", peer_name: str = "",
+                    purpose: str = "") -> Optional[str]:
         sources, files = [], []
         for p in paths:
             p = Path(p)
@@ -841,10 +894,17 @@ class NetworkCore(QObject):
         peer = self.peers.get(peer_id)
         tr = Transfer(tid=tid, direction="out", peer_id=peer_id, peer_name=peer.name if peer else peer_name,
                       files=files, total=sum(f["size"] for f in files), title=title, sources=sources,
-                      state="offered" if peer else "queued", gid=gid)
+                      state="offered" if peer else "queued", gid=gid, purpose=purpose)
         self.transfers[tid] = tr
-        self.transfer_added.emit(tid)
         obj = {"type": "file_offer", "tid": tid, "files": files, "title": title}
+        if purpose:                       # internal transfer (installer): never queued, not shown in chats
+            obj["purpose"] = purpose
+            if not peer:
+                del self.transfers[tid]
+                return None
+            self._deliver(tid, peer_id, obj)
+            return tid
+        self.transfer_added.emit(tid)
         if gid:
             obj["gid"] = gid
         self._send_or_queue(peer_id, tid, obj, extra={"sources": sources, "peer_name": tr.peer_name})
@@ -1060,3 +1120,106 @@ class NetworkCore(QObject):
         self.transfer_changed.emit(tid)
         if tr.direction == "out" and prev == "offered":
             self._request(tr.peer_id, {"type": "file_cancel", "tid": tid})
+
+    # ---------------------------------------------------------------- in-place updates & shared appearance
+    def _check_peer_news(self, peer: Peer):
+        if peer.upd and peer.version and updates.newer(peer.version, self.version) \
+                and peer.version not in self._update_seen:
+            self._update_seen.add(peer.version)
+            self.update_available.emit(peer.version, peer.id)
+        if peer.thv > int(self.settings.theme_version or 0):
+            key = (peer.id, peer.thv)
+            if time.time() - self._theme_asked.get(key, 0) > 60:
+                self._theme_asked[key] = time.time()
+                QTimer.singleShot(random.randint(200, 3000),
+                                  lambda pid=peer.id: self._request(pid, {"type": "theme_req"}))
+
+    def best_update_source(self) -> Optional[Peer]:
+        """The online colleague with the newest version that can give us its installer."""
+        cands = [p for p in self.peers.values() if p.upd and updates.newer(p.version, self.version)]
+        return max(cands, key=lambda p: updates.version_tuple(p.version)) if cands else None
+
+    def request_update(self, peer_id: Optional[str] = None) -> bool:
+        peer = self.peers.get(peer_id) if peer_id else self.best_update_source()
+        if not peer:
+            return False
+        self._update_from[peer.id] = time.time()
+        self._update_version = peer.version
+        return self._request(peer.id, {"type": "update_req"},
+                             on_fail=lambda err: self.update_failed.emit(str(err)))
+
+    def _accept_update(self, tr: Transfer):
+        from .config import config_dir
+        d = Path(self.data_dir) / "updates"
+        try:
+            if d.exists():
+                for f in d.iterdir():
+                    if f.is_file():
+                        f.unlink()
+        except OSError:
+            pass
+        tr.files[0]["rel"] = updates.SETUP_NAME
+        self._update_tid = tr.tid
+        self.accept_transfer(tr.tid, str(d))
+
+    def _update_transfer_changed(self, tid: str):
+        if tid != self._update_tid:
+            return
+        tr = self.transfers.get(tid)
+        if not tr:
+            return
+        if tr.state == "done":
+            path = tr.dest_paths[0] if tr.dest_paths else ""
+            if path and updates.looks_like_installer(path):
+                self.update_ready.emit(path, getattr(self, "_update_version", ""))
+            else:
+                self.update_failed.emit("invalid installer")
+        elif tr.state in ("failed", "canceled", "declined"):
+            self.update_failed.emit(tr.error or tr.state)
+        else:
+            self.update_progress.emit(tr.done, tr.total)
+
+    def _theme_file(self) -> Path:
+        return Path(self.data_dir) / "theme_package.json"
+
+    def theme_package(self) -> Optional[dict]:
+        try:
+            return json.loads(self._theme_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def receive_theme(self, pkg) -> bool:
+        """A signed appearance from the administrator: verify, apply, keep it to pass on to others."""
+        if not isinstance(pkg, dict):
+            return False
+        theme = theme_share.verify(pkg, self.settings.theme_pin)
+        if theme is None:
+            return False
+        try:
+            v = int(theme.get("v", 0))
+        except (TypeError, ValueError):
+            return False
+        if v <= int(self.settings.theme_version or 0):
+            return False
+        self.settings.theme_pin = str(pkg["pub"])
+        try:
+            self._theme_file().write_text(json.dumps(pkg, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+        theme_share.apply(theme, self.settings)
+        self.theme_applied.emit(theme)
+        self.announce("hello")                  # others now see we have it and can fetch it from us too
+        return True
+
+    def publish_theme(self, password: str, lock: bool) -> Optional[dict]:
+        """Administrator: sign the current appearance with the admin password and spread it."""
+        v = max(int(self.settings.theme_version or 0),
+                max((p.thv for p in self.peers.values()), default=0)) + 1
+        pkg = theme_share.sign(theme_share.build(self.settings, v, lock), password)
+        if self.settings.theme_pin and pkg["pub"] != self.settings.theme_pin:
+            return None                         # a different password than the one everybody trusts
+        if not self.receive_theme(pkg):
+            return None
+        self.settings.theme_lock = False        # the administrator's own computer is never locked
+        self.settings.save()
+        return pkg

@@ -13,11 +13,11 @@ from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QFont, QPixmap
 from PySide6.QtNetwork import QAbstractSocket, QNetworkInterface
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QMainWindow, QMenu, QMessageBox, QSplitter, QStackedWidget,
+                               QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter, QStackedWidget,
                                QStatusBar, QSystemTrayIcon, QTabWidget, QToolBar, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from .. import APP_NAME, branding
+from .. import APP_NAME, APP_VERSION, branding, updates
 from ..config import Settings
 from ..history import History
 from ..i18n import human_size, tr
@@ -128,6 +128,13 @@ class MainWindow(QMainWindow):
         core.group_updated.connect(self.on_group_updated)
         core.group_removed.connect(self.on_group_removed)
         core.group_message_deleted.connect(self.on_group_message_deleted)
+        core.update_available.connect(self.on_update_available)
+        core.update_progress.connect(self.on_update_progress)
+        core.update_ready.connect(self.on_update_ready)
+        core.update_failed.connect(self.on_update_failed)
+        core.theme_applied.connect(self.on_theme_applied)
+        self._update_target = ("", "")
+        self.apply_appearance(render=False)
         self._tree_timer = QTimer(self, singleShot=True, interval=400)   # 1000 users: rebuild at most 2-3x/s
         self._tree_timer.timeout.connect(self.refresh_tree)
 
@@ -234,9 +241,30 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(welcome)
         self.stack.addWidget(self.tabs)
 
+        # "a new version is available" bar (in-place update over the LAN)
+        self.update_bar = QFrame(objectName="UpdateBar")
+        self.update_bar.setStyleSheet("#UpdateBar{background:#FEF3C7;border-bottom:1px solid #F59E0B}")
+        ub = QHBoxLayout(self.update_bar)
+        ub.setContentsMargins(12, 6, 12, 6)
+        self.update_lbl = QLabel()
+        self.update_btn = QPushButton(tr("update_now"), objectName="Primary")
+        self.update_btn.clicked.connect(self.start_update)
+        later = QPushButton(tr("later"))
+        later.clicked.connect(self.update_bar.hide)
+        ub.addWidget(self.update_lbl, 1)
+        ub.addWidget(self.update_btn)
+        ub.addWidget(later)
+        self.update_bar.hide()
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        rl.addWidget(self.update_bar)
+        rl.addWidget(self.stack, 1)
+
         split = QSplitter()
         split.addWidget(side)
-        split.addWidget(self.stack)
+        split.addWidget(right)
         split.setStretchFactor(1, 1)
         split.setSizes([290, 790])
         split.setChildrenCollapsible(False)
@@ -662,7 +690,7 @@ class MainWindow(QMainWindow):
 
     def on_transfer_added(self, tid):
         t = self.core.transfers[tid]
-        if t.gid and t.direction == "out":
+        if t.purpose or (t.gid and t.direction == "out"):
             return          # one summary line in the group chat instead of a card per member
         ts = time.time()
         key = self._transfer_key(t)
@@ -686,7 +714,7 @@ class MainWindow(QMainWindow):
 
     def on_transfer_changed(self, tid):
         t = self.core.transfers.get(tid)
-        if not t or (t.gid and t.direction == "out"):
+        if not t or t.purpose or (t.gid and t.direction == "out"):
             return
         chat = self.chats.get(self._transfer_key(t))
         if getattr(t, "_saved_state", None) != t.state:      # persist state changes, not every progress tick
@@ -803,8 +831,10 @@ class MainWindow(QMainWindow):
         HistorySearchDialog(self.history, self).exec()
 
     def open_settings(self):
-        dlg = SettingsDialog(self.s, self)
-        dlg.branding_changed.connect(self.apply_branding)
+        dlg = SettingsDialog(self.s, self, core=self.core)
+        dlg.branding_changed.connect(self.apply_appearance)
+        dlg.update_requested.connect(lambda: self.check_updates(dlg))
+        dlg.install_file.connect(lambda path: self.install_update(path, "", dlg))
         if not dlg.exec():
             return
         restart = dlg.apply()
@@ -814,10 +844,92 @@ class MainWindow(QMainWindow):
         self.me_group.setText(self.s.group)
         self.lbl_sec.setText("🔒 AES-256" if self.s.password else "🔓 " + ("بدون تشفير" if self.s.language == "ar" else "Not encrypted"))
         self.core.apply_settings()
-        for chat in self.chats.values():
-            chat.view.set_background(self.s.chat_bg, self.s.chat_bg_image, self.s.chat_bg_opacity)
+        self.apply_appearance()
         if restart:
             QMessageBox.information(self, APP_NAME, tr("restart_needed"))
+
+    # ======================================================================= appearance
+    def apply_appearance(self, render=True):
+        s = self.s
+        ChatWidget.set_appearance(s.bubble_me, s.bubble_them, s.font_pt, s.bubble_border)
+        self.setWindowTitle(self.app_title())
+        if render:
+            self.apply_branding()
+        for chat in self.chats.values():
+            chat.view.set_background(s.chat_bg, s.chat_bg_image, s.chat_bg_opacity)
+            if render:
+                chat.schedule_render()
+
+    def on_theme_applied(self, _theme):
+        self.apply_appearance()
+        if self.tray.isVisible():
+            self.tray.showMessage(self.app_title(), tr("theme_received"), app_icon(), 4000)
+
+    # ======================================================================= updates (over the LAN)
+    def on_update_available(self, version, pid):
+        if not self.s.update_auto or self._update_target[0]:
+            return
+        if updates.newer(self._update_target[1] or "0", version):
+            return
+        p = self.core.peers.get(pid)
+        self._update_target = ("", version)
+        self.update_lbl.setText(tr("update_banner", v=version, name=p.name if p else "?"))
+        self.update_btn.setEnabled(True)
+        self.update_bar.show()
+
+    def start_update(self, pid=None):
+        src = self.core.peers.get(pid) if pid else self.core.best_update_source()
+        if src is None:
+            self.update_bar.hide()
+            return
+        if sys.platform != "win32":
+            QMessageBox.information(self, APP_NAME, tr("update_windows_only"))
+            return
+        self._update_target = (src.id, src.version)
+        self.update_btn.setEnabled(False)
+        self.update_lbl.setText(tr("update_downloading", v=src.version, p=0))
+        self.update_bar.show()
+        if not self.core.request_update(src.id):
+            self.on_update_failed("offline")
+
+    def on_update_progress(self, done, total):
+        v = self._update_target[1]
+        self.update_lbl.setText(tr("update_downloading", v=v, p=int(100 * done / total) if total else 0))
+
+    def on_update_failed(self, err):
+        self._update_target = ("", self._update_target[1])
+        self.update_btn.setEnabled(True)
+        self.update_lbl.setText(tr("update_failed", e=err))
+        self.update_bar.show()
+
+    def on_update_ready(self, path, version):
+        self.update_bar.hide()
+        self.install_update(path, version or self._update_target[1])
+        self._update_target = ("", self._update_target[1])
+
+    def install_update(self, path, version="", parent=None):
+        if sys.platform != "win32":
+            QMessageBox.information(parent or self, APP_NAME, tr("update_windows_only"))
+            return
+        if QMessageBox.question(parent or self, APP_NAME, tr("update_ready", v=version or "")) \
+                != QMessageBox.StandardButton.Yes:
+            return
+        if updates.run_installer(path, silent=True):
+            self.tray.showMessage(APP_NAME, tr("update_started"), app_icon(), 3000)
+            if parent is not None:
+                parent.reject()
+            QTimer.singleShot(800, self.quit)      # the installer also closes TDA if it is still running
+        else:
+            QMessageBox.warning(parent or self, APP_NAME, tr("update_failed", e="UAC"))
+
+    def check_updates(self, parent=None):
+        src = self.core.best_update_source()
+        if src is None:
+            QMessageBox.information(parent or self, APP_NAME, tr("update_none", v=APP_VERSION))
+            return
+        if parent is not None:
+            parent.reject()
+        self.start_update(src.id)
 
     def about(self):
         box = QMessageBox(self)

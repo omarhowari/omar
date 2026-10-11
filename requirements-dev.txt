@@ -1,0 +1,3 @@
+# Everything needed to run, debug and test TDA from source (Visual Studio / VS Code / PyCharm)
+-r requirements.txt
+PySide6-Addons>=6.6        # Qt Multimedia (camera in video calls)

@@ -25,8 +25,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .config import Settings, config_dir
 
-MAX_IMAGE = 1_500_000
-APPEARANCE_KEYS = ("app_title", "chat_bg", "chat_bg_opacity", "bubble_me", "bubble_them", "font_pt")
+MAX_IMAGE = 900_000          # 3 images in one 4 MB network frame
+APPEARANCE_KEYS = ("app_title", "chat_bg", "chat_bg_opacity", "bubble_me", "bubble_them", "bubble_border", "font_pt")
 
 
 def _canonical(theme: dict) -> bytes:

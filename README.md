@@ -2,10 +2,14 @@
 
 ## ⬇️ تحميل البرنامج
 
-**[⬇️ اضغط هنا لتحميل TDA-Setup.exe (النسخة 1.4.1)](https://github.com/omarhowari/omar/raw/main/download/TDA-Setup.exe)**
+**[⬇️ اضغط هنا لتحميل TDA-Setup.exe (النسخة 1.5.0)](https://github.com/omarhowari/omar/raw/main/download/TDA-Setup.exe)**
 
 أو نفس المثبّت مضغوطاً: [TDA.zip](https://github.com/omarhowari/omar/raw/main/download/TDA.zip). يعمل على Windows 10 و 11 (64-bit).
 إذا ظهر تحذير "Windows protected your PC" اضغط **More info** ثم **Run anyway**.
+
+> **التحديث:** لا داعي لإلغاء التثبيت أبداً. ثبّت النسخة الجديدة على جهاز واحد، فيظهر لباقي الأجهزة زر **«تحديث الآن»** ويتحدّث كل جهاز عبر الشبكة الداخلية وحده مع بقاء الرسائل والإعدادات.
+>
+> **للمطوّرين:** افتح `TDA.sln` في Visual Studio — التفاصيل في [docs/DEVELOPER.md](docs/DEVELOPER.md).
 
 <p align="center"><img src="assets/tda.png" width="110"></p>
 
@@ -33,6 +37,12 @@
 | 🏢 أكثر من 1000 مستخدم | فاصل الإعلان يتكيّف مع حجم الشبكة، وقائمة المستخدمين تُحدَّث دفعة واحدة (مختبَر على 1000 مستخدم) |
 | 🎨 خلفية المحادثة | زخرفة إسلامية أو صورة من جهازك مع التحكم بالشفافية |
 | 📞 مكالمات صوتية | مكالمة مباشرة بين جهازين عبر الشبكة الداخلية (UDP مشفّر)، مع رنين وكتم للميكروفون وسجل للمكالمات والمكالمات الفائتة |
+| 🔄 تحديث بدون إلغاء تثبيت | ثبّت النسخة الجديدة على جهاز واحد فتنتشر لكل الأجهزة عبر الشبكة بزر «تحديث الآن» (أو `TDA-Setup.exe /S` للتوزيع الصامت) |
+| 🛡️ صلاحيات المجموعات | مالك ومشرفون، تجميد عضو عن الكتابة أو الوسائط أو الاتصال، «المشرفون فقط» للإرسال/التعديل/الإضافة، حذف الرسالة للجميع، نقل الملكية |
+| 🪟 اختيار ما تشاركه | أثناء المكالمة: الشاشة كاملة، أو نافذة تطبيق واحدة، أو مجلد |
+| 💬 شكل الرسائل | ألوان فقاعاتي وفقاعات الطرف الآخر وحجم الخط والإطار، مع معاينة |
+| 📢 مظهر موحّد من المدير | المدير ينشر الشعار والاسم والخلفية وألوان الرسائل لكل الأجهزة (موقّع بكلمة سره) مع خيار قفل المظهر |
+| 📤 مشاركة التطبيق | من الإعدادات المتقدمة: حفظ نسخة في مجلد، أو إرسالها لمستخدمي TDA، أو تلغرام، واتساب، البريد، بلوتوث |
 | 🔒 تشفير | تشفير اختياري AES‑256‑GCM لكل الرسائل والملفات بكلمة سر مشتركة للشبكة |
 | 👥 مجموعات / أقسام | يُصنَّف المستخدمون حسب القسم (IT، MEAL، المالية…) |
 | 🟢 الحالة | متاح / بعيد / مشغول، وتتحول إلى «بعيد» تلقائياً عند عدم النشاط |
@@ -54,17 +64,16 @@
 1. ثبّت [Python 3.10 أو أحدث](https://www.python.org/downloads/) وفعّل خيار *Add to PATH*.
 2. شغّل `run.bat` (أو `python main.py`).
 
-### الطريقة 3: بناء ملف exe بنفسك
-شغّل `build_windows.bat`، فيظهر البرنامج في `dist\TDA\TDA.exe`.
-إذا كان [Inno Setup 6](https://jrsoftware.org/isdl.php) مثبّتاً، يُبنى المثبّت أيضاً في `dist\`.
+### الطريقة 3: التعديل في Visual Studio وبناء المثبّت بنفسك
+افتح `TDA.sln` (اضغط F5 للتشغيل)، ثم شغّل `build_windows.bat` فيُبنى `dist\TDA-Setup.exe`.
+يحتاج Visual Studio (Python + C++) و [NSIS](https://nsis.sourceforge.io). الشرح الكامل: [docs/DEVELOPER.md](docs/DEVELOPER.md).
 
 ### بناء نسخة Windows من Linux
-`packaging/windows/build_portable.sh` يبني `TDA.exe` و `TDA-Setup.exe` و `TDA-portable.zip`
+`packaging/windows/build_portable.sh dist` يبني `TDA.exe` و `TDA-Setup.exe` و `TDA-portable.zip`
 باستخدام Python 3.13 embeddable الرسمي و mingw-w64 و NSIS.
 
 ### البناء التلقائي عبر GitHub
-ارفع المشروع إلى مستودع GitHub، وسيبني ملف `.github/workflows/build-windows.yml` تلقائياً
-المثبّت ونسخة محمولة (zip). وعند إنشاء وسم `v1.0.0` تُنشر نسخة Release.
+ارفع المشروع إلى مستودع GitHub، ثم من Actions اختر **Build Windows → Run workflow**، فيُبنى المثبّت ونسخة محمولة (zip). وعند إنشاء وسم مثل `v1.5.0` تُنشر نسخة Release.
 
 ## الإعداد
 
@@ -84,9 +93,13 @@ tda/crypto.py         AES-256-GCM + PBKDF2-SHA256
 tda/history.py        سجل المحادثات (SQLite)
 tda/calls.py          المكالمات الصوتية: إشارات عبر TCP وصوت PCM 16kHz عبر UDP مشفّر (sounddevice/PortAudio)
 tda/branding.py       الشعار والصور المخصّصة وكلمة سر المدير
+tda/groups.py         صلاحيات المجموعات
+tda/updates.py        التحديث عبر الشبكة
+tda/theme_share.py    مظهر المدير الموقّع (Ed25519)
 tda/ui/               الواجهة (PySide6 / Qt 6)
 tests/                اختبارات الشبكة والواجهة
-installer/TDA.iss     مثبّت Inno Setup
+packaging/windows/    بناء TDA.exe و TDA-Setup.exe (NSIS)
+TDA.sln / TDA.pyproj  مشروع Visual Studio
 ```
 
 **البروتوكول باختصار:**
@@ -100,6 +113,7 @@ installer/TDA.iss     مثبّت Inno Setup
 ```bash
 pip install -r requirements.txt
 python -m tests.test_network      # اكتشاف + محادثة + ملفات + مجلدات + تشفير + عزل كلمات السر
+python -m tests.test_update       # التحديث عبر الشبكة + نشر مظهر المدير وتوقيعه
 python -m tests.test_calls        # مكالمة كاملة: صوت، فيديو، مشاركة شاشة، كتم، رفض، فائتة، مشغول، انقطاع
 python -m tests.test_scale 1000   # 1000 مستخدم وهمي على نفس الجهاز
 python -m tests.ui_smoke ar       # يفتح 4 نوافذ تتحادث وترسل ملفات وتتصل ويحفظ لقطات شاشة
@@ -115,7 +129,10 @@ optional AES-256-GCM encryption, departments/groups, statuses with auto-away, se
 tray notifications, and Arabic (RTL) and English UI.
 
 - Run from source: `pip install -r requirements.txt && python main.py`
-- Build: `build_windows.bat` (PyInstaller + Inno Setup), or push to GitHub and let Actions build the installer.
+- Edit in Visual Studio: open `TDA.sln` (see docs/DEVELOPER.md). Build: `build_windows.bat` (Visual Studio C++ + NSIS),
+  `packaging/windows/build_portable.sh dist` on Linux, or GitHub Actions → Build Windows.
+- Updates: install the new version on one PC; every other PC shows "Update now" and updates itself over the LAN
+  (silent, settings and history kept). `TDA-Setup.exe /S` also works for silent deployment.
 - Ports: UDP 47100 (discovery), TCP 47101 (messages/files).
 
 ![TDA](docs/screenshot-en.png)

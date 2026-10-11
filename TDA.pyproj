@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Visual Studio project (workload: "Python development"). Open TDA.sln, then F5 runs main.py. -->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{8E2C1A55-6F1B-4C0E-9B7D-3A1D0E5C7A11}</ProjectGuid>
+    <ProjectHome>.</ProjectHome>
+    <StartupFile>main.py</StartupFile>
+    <SearchPath>.</SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <Name>TDA</Name>
+    <RootNamespace>TDA</RootNamespace>
+    <LaunchProvider>Standard Python launcher</LaunchProvider>
+    <EnableNativeCodeDebugging>False</EnableNativeCodeDebugging>
+    <IsWindowsApplication>False</IsWindowsApplication>
+    <SuppressConfigureTestFrameworkPrompt>true</SuppressConfigureTestFrameworkPrompt>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="main.py" />
+    <Compile Include="tda\__init__.py" />
+    <Compile Include="tda\branding.py" />
+    <Compile Include="tda\calls.py" />
+    <Compile Include="tda\config.py" />
+    <Compile Include="tda\crypto.py" />
+    <Compile Include="tda\groups.py" />
+    <Compile Include="tda\history.py" />
+    <Compile Include="tda\i18n.py" />
+    <Compile Include="tda\network.py" />
+    <Compile Include="tda\protocol.py" />
+    <Compile Include="tda\theme_share.py" />
+    <Compile Include="tda\ui\call_window.py" />
+    <Compile Include="tda\ui\chat.py" />
+    <Compile Include="tda\ui\dialogs.py" />
+    <Compile Include="tda\ui\group_info.py" />
+    <Compile Include="tda\ui\main_window.py" />
+    <Compile Include="tda\ui\share_app.py" />
+    <Compile Include="tda\ui\share_picker.py" />
+    <Compile Include="tda\ui\theme.py" />
+    <Compile Include="tda\updates.py" />
+    <Compile Include="tda\video.py" />
+    <Compile Include="tda\winshare.py" />
+    <Compile Include="tests\__init__.py" />
+    <Compile Include="tests\test_audio_backend.py" />
+    <Compile Include="tests\test_branding.py" />
+    <Compile Include="tests\test_calls.py" />
+    <Compile Include="tests\test_groups.py" />
+    <Compile Include="tests\test_network.py" />
+    <Compile Include="tests\test_scale.py" />
+    <Compile Include="tests\test_update.py" />
+    <Compile Include="tests\ui_smoke.py" />
+    <Compile Include="packaging\windows\assemble.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="tda\" />
+    <Folder Include="tda\ui\" />
+    <Folder Include="tests\" />
+    <Folder Include="assets\" />
+    <Folder Include="packaging\" />
+    <Folder Include="packaging\windows\" />
+    <Folder Include="docs\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="assets\chat_pattern.png" />
+    <Content Include="assets\logo.png" />
+    <Content Include="assets\tda.ico" />
+    <Content Include="assets\tda.png" />
+    <Content Include="requirements.txt" />
+    <Content Include="requirements-dev.txt" />
+    <Content Include="README.md" />
+    <Content Include="docs\DEVELOPER.md" />
+    <Content Include="LICENSE" />
+    <Content Include="build_windows.bat" />
+    <Content Include="run.bat" />
+    <Content Include="packaging\windows\build_windows.ps1" />
+    <Content Include="packaging\windows\build_portable.sh" />
+    <Content Include="packaging\windows\installer.nsi" />
+    <Content Include="packaging\windows\launcher.c" />
+    <Content Include="packaging\windows\launcher.rc" />
+    <Content Include="packaging\windows\app.manifest" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+</Project>
