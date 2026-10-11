@@ -888,8 +888,7 @@ class ChatWidget(QWidget):
         if not counts:
             return ""
         chips = " ".join(f"{e}{'' if n == 1 else ' ' + str(n)}" for e, n in counts.items())
-        return (f'<br><span style="background:#FFFFFF;color:#54656F;font-size:{pt:.1f}pt">'
-                f'&nbsp;{chips}&nbsp;</span>')
+        return f'<br><span style="color:#54656F;font-size:{pt + 1:.1f}pt">{chips}</span>'
 
     def item(self, mid: str):
         return next((it for it in self.items if it.get("id") == mid), None)

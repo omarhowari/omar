@@ -484,19 +484,25 @@ class NetworkCore(QObject):
         self.transfer_changed.connect(self._update_transfer_changed)
 
     # ---------------------------------------------------------------- lifecycle
-    def start(self) -> bool:
+    def start(self, tcp_port: Optional[int] = None) -> bool:
+        """Bind the sockets and start announcing. Can be called again after a failure (e.g. with
+        another TCP port): the port actually used is announced to everybody, so any free port works."""
         s = self.settings
-        ok_udp = self.udp.bind(QHostAddress(QHostAddress.SpecialAddress.AnyIPv4), s.udp_port,
-                               QUdpSocket.BindFlag.ShareAddress | QUdpSocket.BindFlag.ReuseAddressHint)
-        if not ok_udp:
-            self.error.emit(f"UDP {s.udp_port}: {self.udp.errorString()}")
-            return False
-        self.udp.setSocketOption(QAbstractSocket.SocketOption.ReceiveBufferSizeSocketOption, 4 * 1024 * 1024)
-        self.udp.readyRead.connect(self._read_udp)
-        if not self.tcp.listen(QHostAddress(QHostAddress.SpecialAddress.AnyIPv4), s.tcp_port):
-            self.error.emit(f"TCP {s.tcp_port}: {self.tcp.errorString()}")
-            return False
-        self.tcp.newConnection.connect(self._accept)
+        if self.udp.state() != QAbstractSocket.SocketState.BoundState:
+            ok_udp = self.udp.bind(QHostAddress(QHostAddress.SpecialAddress.AnyIPv4), s.udp_port,
+                                   QUdpSocket.BindFlag.ShareAddress | QUdpSocket.BindFlag.ReuseAddressHint)
+            if not ok_udp:
+                self.error.emit(f"UDP {s.udp_port}: {self.udp.errorString()}")
+                return False
+            self.udp.setSocketOption(QAbstractSocket.SocketOption.ReceiveBufferSizeSocketOption, 4 * 1024 * 1024)
+            self.udp.readyRead.connect(self._read_udp)
+        port = tcp_port or s.tcp_port
+        if not self.tcp.isListening():
+            if not self.tcp.listen(QHostAddress(QHostAddress.SpecialAddress.AnyIPv4), port):
+                self.error.emit(f"TCP {port}: {self.tcp.errorString()}")
+                return False
+            self.tcp.newConnection.connect(self._accept)
+        self.tcp_port = port
         self.running = True
         self._restore_queued_transfers()
         self.announce("hello")
@@ -529,7 +535,7 @@ class NetworkCore(QObject):
     def _hello(self, kind: str) -> dict:
         s = self.settings
         return {"t": kind, "id": s.user_id, "name": s.name, "group": s.group, "status": s.status,
-                "port": s.tcp_port, "host": socket.gethostname(),
+                "port": getattr(self, "tcp_port", s.tcp_port), "host": socket.gethostname(),
                 "os": f"{platform.system()} {platform.release()}", "v": self.version, "pv": PROTOCOL_VERSION,
                 "iv": round(self.announce_interval(), 1),
                 "upd": 1 if self.update_package() else 0, "thv": int(s.theme_version or 0)}
@@ -838,7 +844,7 @@ class NetworkCore(QObject):
             return False
         obj.setdefault("from", self.settings.user_id)
         obj.setdefault("from_name", self.settings.name)
-        obj.setdefault("from_port", self.settings.tcp_port)      # lets the receiver answer before discovery
+        obj.setdefault("from_port", getattr(self, "tcp_port", self.settings.tcp_port))      # lets the receiver answer before discovery
         obj.setdefault("from_group", self.settings.group)
         _Request(self, peer.host, peer.tcp_port, obj, on_ok, on_fail)
         return True

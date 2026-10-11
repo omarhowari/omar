@@ -5,7 +5,7 @@ Unicode true
 !include "Sections.nsh"
 
 !define APPNAME "TDA"
-!define VERSION "1.7.0"
+!define VERSION "1.7.1"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\TDA"
 
 Name "${APPNAME}"
@@ -19,7 +19,8 @@ BrandingText "TDA ${VERSION} - LAN Messenger (MIT)"
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\TDA.exe"
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_FUNCTION RunTDA      ; start TDA as the normal user, not as administrator
 !define MUI_LANGDLL_ALLLANGUAGES
 
 !insertmacro MUI_PAGE_WELCOME
@@ -39,7 +40,7 @@ LangString SecDesktop ${LANG_ENGLISH} "Desktop shortcut"
 LangString SecStartup ${LANG_ARABIC} "التشغيل مع بدء Windows"
 LangString SecStartup ${LANG_ENGLISH} "Start with Windows"
 
-VIProductVersion "1.7.0.0"
+VIProductVersion "1.7.1.0"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "TDA"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "TDA LAN Messenger Setup"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "${VERSION}"
@@ -107,6 +108,10 @@ Function .onInit
   ${Else}
     !insertmacro MUI_LANGDLL_DISPLAY
   ${EndIf}
+FunctionEnd
+
+Function RunTDA
+  Exec '"$WINDIR\explorer.exe" "$INSTDIR\TDA.exe"'
 FunctionEnd
 
 Function .onInstSuccess

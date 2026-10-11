@@ -41,6 +41,43 @@ def _install_crash_log():
     sys.excepthook = hook
 
 
+def _show_other_instance(key: str, wait_ms: int = 1500) -> bool:
+    """If TDA is already running for this user, bring its window forward."""
+    probe = QLocalSocket()
+    probe.connectToServer(key)
+    if probe.waitForConnected(wait_ms):
+        probe.write(b"show")
+        probe.waitForBytesWritten(500)
+        return True
+    return False
+
+
+def _start_network(core, settings, key, errors) -> bool:
+    """Start networking. If the TCP port is busy: wait a moment (an old copy may still be closing after an
+    update), check whether another TDA is already running (then just show it), otherwise use the next
+    free port - the port is announced to everybody, so colleagues still reach us."""
+    import time
+    from PySide6.QtWidgets import QApplication
+    for _ in range(8):
+        if core.start():
+            errors.clear()
+            return True
+        if any(e.startswith("UDP") for e in errors):
+            return False
+        end = time.time() + 0.6
+        while time.time() < end:
+            QApplication.processEvents()
+            time.sleep(0.05)
+    if _show_other_instance(key):
+        errors[:] = ["__other_instance__"]
+        return False
+    for port in range(settings.tcp_port + 1, settings.tcp_port + 40):
+        if core.start(tcp_port=port):
+            errors.clear()
+            return True
+    return False
+
+
 def main() -> int:
     _install_crash_log()
     if sys.platform == "win32":
@@ -53,14 +90,12 @@ def main() -> int:
 
     # --- single instance: a second launch just brings the first window forward
     key = f"TDA-{getpass.getuser()}"
-    probe = QLocalSocket()
-    probe.connectToServer(key)
-    if probe.waitForConnected(300):
-        probe.write(b"show")
-        probe.waitForBytesWritten(300)
+    if _show_other_instance(key, 600):
         return 0
     QLocalServer.removeServer(key)
     server = QLocalServer()
+    # also reachable from a copy started "as administrator" (e.g. by the installer) and vice versa
+    server.setSocketOptions(QLocalServer.SocketOption.WorldAccessOption)
     server.listen(key)
 
     settings = Settings.load()
@@ -87,7 +122,9 @@ def main() -> int:
     win = MainWindow(settings, core, history)
     server.newConnection.connect(lambda: (server.nextPendingConnection(), win.show_normal()))
 
-    if not core.start():
+    if not _start_network(core, settings, key, errors):
+        if errors == ["__other_instance__"]:
+            return 0
         QMessageBox.critical(None, APP_NAME, tr("start_error", err="\n".join(errors)))
         return 1
 
