@@ -43,6 +43,8 @@ def _install_crash_log():
 
 def main() -> int:
     _install_crash_log()
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_MEDIA_BACKEND", "windows")   # camera via Windows Media Foundation
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
@@ -67,10 +69,16 @@ def main() -> int:
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
 
+    history = History()
+    if not settings.setup_done:          # first start: ask for name and department
+        from tda.ui.dialogs import FirstRunDialog
+        dlg = FirstRunDialog(settings, [c.get("group", "") for c in history.contacts()])
+        if not dlg.exec():
+            return 0
+
     core = NetworkCore(settings)
     errors = []
     core.error.connect(errors.append)
-    history = History()
     win = MainWindow(settings, core, history)
     server.newConnection.connect(lambda: (server.nextPendingConnection(), win.show_normal()))
 

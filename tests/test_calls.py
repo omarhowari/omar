@@ -11,13 +11,14 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QCoreApplication, QEventLoop  # noqa: E402
+from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal  # noqa: E402
+from PySide6.QtGui import QColor, QGuiApplication, QImage  # noqa: E402
 
 from tda.calls import FRAME_SAMPLES, AudioBackend, CallController  # noqa: E402
 from tda.config import Settings  # noqa: E402
 from tda.network import NetworkCore  # noqa: E402
 
-app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
 
 
 class FakeAudio(AudioBackend):
@@ -70,9 +71,32 @@ def make(name, base, peer, pw):
     tmp = tempfile.mkdtemp()
     s = Settings(name=name, udp_port=base, tcp_port=base + 1, password=pw,
                  extra_hosts=[f"127.0.0.1:{peer}"], download_dir=str(Path(tmp) / "dl"))
-    c = NetworkCore(s)
+    c = NetworkCore(s, data_dir=Path(tmp) / "data")
     assert c.start()
     return c
+
+
+class FakeVideo(QObject):
+    """Stands in for a webcam / screen: emits solid-colour frames."""
+    image = Signal(object)
+
+    def __init__(self, color, size):
+        super().__init__()
+        self.color, self.size = color, size
+        self.timer = QTimer(self, interval=100)
+        self.timer.timeout.connect(self._emit)
+
+    def start(self):
+        self.timer.start()
+        return True
+
+    def stop(self):
+        self.timer.stop()
+
+    def _emit(self):
+        img = QImage(*self.size, QImage.Format.Format_RGB32)
+        img.fill(QColor(self.color))
+        self.image.emit(img)
 
 
 def main():
@@ -100,6 +124,27 @@ def main():
     silent = all(f == bytes(len(f)) for f in fb.played[-10:])
     assert silent, "mute should send silence"
     print("mute ok")
+
+    # video: A shares its screen (1920x1080 red), B turns its camera on (640x480 blue)
+    ca.screen_factory = lambda parent: FakeVideo("#ff0000", (1920, 1080))
+    cb.camera_factory = lambda parent: FakeVideo("#0000ff", (640, 480))
+    assert wait(lambda: ca.link is not None and cb.link is not None, 5), "media link not established"
+    got_b, got_a = [], []
+    cb.video_frame.connect(lambda k, img: got_b.append((k, img)))
+    ca.video_frame.connect(lambda k, img: got_a.append((k, img)))
+    assert ca.toggle_video("screen") and cb.toggle_video("camera")
+    assert wait(lambda: len(got_b) > 5 and len(got_a) > 5, 8), (len(got_a), len(got_b))
+    k, img = got_b[-1]
+    px = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert k == "screen" and img.width() == 1600 and px.red() > 200 and px.blue() < 60, (k, img.size(), px.name())
+    k, img = got_a[-1]
+    px = img.pixelColor(10, 10)
+    assert k == "camera" and img.width() == 640 and px.blue() > 200 and px.red() < 60, (k, img.size(), px.name())
+    assert wait(lambda: cb.remote_video["screen"] and ca.remote_video["camera"])
+    print(f"video ok: screen share {len(got_b)} frames (scaled to 1600 px), camera {len(got_a)} frames")
+    ca.toggle_video("screen")
+    assert wait(lambda: not cb.remote_video["screen"])
+    print("screen share stop ok")
     ca.hangup()
     assert wait(lambda: ca.state == "idle" and cb.state == "idle")
     assert any(e[0] == "B" and e[3] == "remote_hangup" for e in ends), ends

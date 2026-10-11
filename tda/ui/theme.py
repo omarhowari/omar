@@ -154,11 +154,12 @@ QPushButton {{ background: white; border: 1px solid #D1D5DB; border-radius: 6px;
 QPushButton:hover {{ background: #F9FAFB; border-color: {ACCENT}; }}
 QPushButton#Primary {{ background: {ACCENT}; color: white; border: none; font-weight: 600; }}
 QPushButton#Primary:hover {{ background: {ACCENT_DARK}; }}
+QPushButton#Primary:disabled {{ background: #CBD5E1; color: #F8FAFC; }}
 QPushButton:disabled {{ color: #9CA3AF; background: #F3F4F6; }}
 QTabWidget::pane {{ border: none; background: white; }}
 QTabBar::tab {{ background: #E5E7EB; padding: 7px 14px; margin: 2px 2px 0 2px; border-top-left-radius: 6px; border-top-right-radius: 6px; }}
 QTabBar::tab:selected {{ background: white; color: {ACCENT}; font-weight: 600; }}
-QTextBrowser#ChatView {{ background: #F8FAFC; border: none; }}
+QTextBrowser#ChatView {{ background: transparent; border: none; }}
 #ChatHeader {{ background: white; border-bottom: 1px solid #E5E7EB; }}
 #ChatTitle {{ font-size: 12pt; font-weight: 600; }}
 #Muted {{ color: #6B7280; }}
@@ -169,3 +170,11 @@ QProgressBar::chunk {{ background: {ACCENT}; border-radius: 4px; }}
 QGroupBox {{ font-weight: 600; border: 1px solid #E5E7EB; border-radius: 8px; margin-top: 12px; padding-top: 8px; background: white; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; right: 10px; padding: 0 4px; }}
 """
+
+
+# ------------------------------------------------------------------ chat background
+@lru_cache(maxsize=1)
+def chat_pattern() -> QPixmap:
+    """Built-in Islamic geometric pattern (seamless tile in assets/chat_pattern.png)."""
+    path = resource_path(os.path.join("assets", "chat_pattern.png"))
+    return QPixmap(path)

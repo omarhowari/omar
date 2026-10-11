@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                                QMessageBox,
                                QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit,
-                               QProgressBar, QPushButton, QSpinBox, QTableWidget,
+                               QProgressBar, QPushButton, QSlider, QSpinBox, QTableWidget,
                                QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, APP_VERSION, branding
@@ -73,7 +73,7 @@ class SettingsDialog(QDialog):
         f1.addRow(tr("language"), self.lang)
         f1.addRow(tr("download_dir"), dl_row)
 
-        g2 = QGroupBox("Network")
+        g2 = QGroupBox(tr("network"))
         f2 = QFormLayout(g2)
         f2.addRow(tr("password"), self.pw)
         hint = QLabel(tr("password_hint"), objectName="Muted", wordWrap=True)
@@ -90,6 +90,28 @@ class SettingsDialog(QDialog):
         f3.addRow(self.minimized)
         f3.addRow(self.autostart)
 
+        g5 = QGroupBox(tr("chat_background"))
+        f5 = QFormLayout(g5)
+        self.bg_mode = QComboBox()
+        for key, label in (("pattern", tr("bg_pattern")), ("image", tr("bg_image")), ("none", tr("bg_none"))):
+            self.bg_mode.addItem(label, key)
+        self.bg_mode.setCurrentIndex(max(0, self.bg_mode.findData(s.chat_bg)))
+        self.bg_image = QLineEdit(s.chat_bg_image)
+        bb_img = QPushButton(tr("browse"))
+        bb_img.clicked.connect(self._browse_bg)
+        img_row = QHBoxLayout()
+        img_row.addWidget(self.bg_image, 1)
+        img_row.addWidget(bb_img)
+        self.bg_opacity = QSlider(Qt.Orientation.Horizontal, minimum=0, maximum=100, value=s.chat_bg_opacity)
+        self.bg_opacity_lbl = QLabel(f"{s.chat_bg_opacity}%")
+        self.bg_opacity.valueChanged.connect(lambda v: self.bg_opacity_lbl.setText(f"{v}%"))
+        op_row = QHBoxLayout()
+        op_row.addWidget(self.bg_opacity, 1)
+        op_row.addWidget(self.bg_opacity_lbl)
+        f5.addRow(tr("chat_background"), self.bg_mode)
+        f5.addRow(tr("bg_image"), img_row)
+        f5.addRow(tr("bg_opacity"), op_row)
+
         g4 = QGroupBox(tr("branding"))
         f4 = QHBoxLayout(g4)
         brand_btn = QPushButton(tr("branding_btn"))
@@ -103,10 +125,25 @@ class SettingsDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
 
+        from PySide6.QtWidgets import QScrollArea
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        for w in (g1, g2, g3, g5, g4):
+            bl.addWidget(w)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(body)
         lay = QVBoxLayout(self)
-        for w in (g1, g2, g3, g4):
-            lay.addWidget(w)
+        lay.addWidget(scroll, 1)
         lay.addWidget(bb)
+        self.resize(580, 640)
+
+    def _browse_bg(self):
+        path, _ = QFileDialog.getOpenFileName(self, tr("bg_image"), "", f"{tr('images')} (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if path:
+            self.bg_image.setText(path)
+            self.bg_mode.setCurrentIndex(self.bg_mode.findData("image"))
 
     def _open_branding(self):
         if not admin_unlock(self.s, self):
@@ -136,6 +173,9 @@ class SettingsDialog(QDialog):
         s.notify, s.sound = self.notify.isChecked(), self.sound.isChecked()
         s.start_minimized = self.minimized.isChecked()
         s.autostart = self.autostart.isChecked()
+        s.chat_bg = self.bg_mode.currentData()
+        s.chat_bg_image = self.bg_image.text().strip()
+        s.chat_bg_opacity = self.bg_opacity.value()
         s.save()
         return restart
 
@@ -531,3 +571,119 @@ class HistorySearchDialog(QDialog):
 
 def about_html() -> str:
     return tr("about_text", v=APP_VERSION)
+
+
+# ============================================================================ first run
+class FirstRunDialog(QDialog):
+    """Asks for the user's name and department before TDA starts the first time."""
+
+    def __init__(self, s: Settings, departments=(), parent=None):
+        super().__init__(parent)
+        from .theme import draw_logo
+        self.s = s
+        self.setWindowTitle(tr("first_run_title"))
+        self.setMinimumWidth(460)
+        logo = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        logo.setPixmap(draw_logo(110))
+        title = QLabel(tr("first_run_title"), alignment=Qt.AlignmentFlag.AlignCenter, objectName="WelcomeTitle")
+        text = QLabel(tr("first_run_text"), alignment=Qt.AlignmentFlag.AlignCenter, objectName="Muted", wordWrap=True)
+        self.name = QLineEdit(s.name if s.setup_done else "")
+        self.name.setPlaceholderText(s.name)
+        self.dept = QComboBox()
+        self.dept.setEditable(True)
+        self.dept.addItems(sorted({d for d in departments if d}))
+        self.dept.setCurrentText(s.group if s.group != "General" else "")
+        self.dept.lineEdit().setPlaceholderText(tr("group"))
+        form = QFormLayout()
+        form.addRow(tr("name"), self.name)
+        form.addRow(tr("group"), self.dept)
+        ok = QPushButton(tr("start"), objectName="Primary")
+        ok.clicked.connect(self._ok)
+        ok.setDefault(True)
+        lay = QVBoxLayout(self)
+        for w in (logo, title, text):
+            lay.addWidget(w)
+        lay.addSpacing(8)
+        lay.addLayout(form)
+        lay.addWidget(ok)
+
+    def _ok(self):
+        name = self.name.text().strip() or ""
+        dept = self.dept.currentText().strip()
+        if not name or not dept:
+            QMessageBox.warning(self, APP_NAME, tr("first_run_need"))
+            return
+        self.s.name, self.s.group, self.s.setup_done = name[:64], dept[:64], True
+        self.s.save()
+        self.accept()
+
+
+# ============================================================================ groups
+class GroupDialog(QDialog):
+    """Create a group or manage an existing one (name + members)."""
+
+    def __init__(self, people: dict, online: set, group: dict | None = None, my_id: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("group_manage") if group else tr("new_group"))
+        self.resize(480, 560)
+        self.name = QLineEdit(group["name"] if group else "")
+        self.name.setPlaceholderText(tr("group_name"))
+        self.filter = QLineEdit(placeholderText=tr("search_users"))
+        self.filter.textChanged.connect(self._filter)
+        self.list = QListWidget()
+        current = set(group["members"]) if group else set()
+        for pid, (name, dept) in sorted(people.items(), key=lambda kv: (kv[0] not in online, kv[1][0].lower())):
+            if pid == my_id:
+                continue
+            it = QListWidgetItem(status_icon("available" if pid in online else "offline"),
+                                 f"{name}   —   {dept}" if dept else name)
+            it.setData(Qt.ItemDataRole.UserRole, pid)
+            it.setData(Qt.ItemDataRole.UserRole + 1, name)
+            it.setCheckState(Qt.CheckState.Checked if pid in current else Qt.CheckState.Unchecked)
+            self.list.addItem(it)
+        self.leave_requested = False
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText(tr("ok"))
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText(tr("cancel"))
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"<b>{tr('group_name')}</b>"))
+        lay.addWidget(self.name)
+        lay.addWidget(QLabel(f"<b>{tr('group_choose_members')}</b>"))
+        lay.addWidget(self.filter)
+        lay.addWidget(self.list, 1)
+        bottom = QHBoxLayout()
+        if group:
+            leave = QPushButton(tr("group_leave"))
+            leave.setStyleSheet("color:#B91C1C")
+            leave.clicked.connect(self._leave)
+            bottom.addWidget(leave)
+        bottom.addStretch(1)
+        bottom.addWidget(bb)
+        lay.addLayout(bottom)
+
+    def _filter(self, text):
+        t = text.strip().lower()
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            it.setHidden(bool(t) and t not in it.text().lower())
+
+    def members(self) -> dict:
+        out = {}
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.checkState() == Qt.CheckState.Checked:
+                out[it.data(Qt.ItemDataRole.UserRole)] = it.data(Qt.ItemDataRole.UserRole + 1)
+        return out
+
+    def _ok(self):
+        if not self.name.text().strip() or not self.members():
+            QMessageBox.warning(self, APP_NAME, tr("group_need_members"))
+            return
+        self.accept()
+
+    def _leave(self):
+        if QMessageBox.question(self, APP_NAME, tr("group_leave_confirm", name=self.name.text())) == QMessageBox.StandardButton.Yes:
+            self.leave_requested = True
+            self.accept()

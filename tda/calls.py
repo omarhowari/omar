@@ -208,6 +208,9 @@ class CallController(QObject):
     """One call at a time. States: idle | outgoing | incoming | active."""
 
     state_changed = Signal(str)                 # new state
+    video_frame = Signal(str, object)           # remote "camera" | "screen", QImage
+    local_frame = Signal(str, object)           # our own camera / screen (preview)
+    video_state = Signal()                      # local or remote camera/screen switched on/off
     incoming = Signal(str, str)                 # peer_id, peer_name
     ended = Signal(str, str, str, float)        # peer_id, direction("in"/"out"), reason, duration seconds
     audio_warning = Signal(str)
@@ -224,11 +227,18 @@ class CallController(QObject):
         self.remote_port = 0
         self.session: Optional[CallSession] = None
         self.started_at = 0.0
+        from .video import CameraSource, ScreenSource
+        self.camera_factory = CameraSource
+        self.screen_factory = ScreenSource
+        self.link = None
+        self.sources = {}                        # "camera" / "screen" -> running source
+        self.remote_video = {"camera": False, "screen": False}
         self.ring_timer = QTimer(self, singleShot=True, interval=RING_TIMEOUT_MS)
         self.ring_timer.timeout.connect(self._ring_timeout)
         self.watch = QTimer(self, interval=1000)
         self.watch.timeout.connect(self._watchdog)
         core.call_message.connect(self._on_message)
+        core.media_socket.connect(self._on_media_socket)
         core.peer_removed.connect(self._on_peer_removed)
 
     # ------------------------------------------------------------ helpers
@@ -260,6 +270,68 @@ class CallController(QObject):
         self.started_at = time.time()
         self.watch.start()
         self._set("active")
+        if self.direction == "out":               # the caller opens the video channel
+            from .video import MediaLink
+            peer = self.core.peers.get(self.peer_id)
+            if peer:
+                self._adopt_link(MediaLink.connect_to(
+                    self.core.cipher, peer.host, peer.tcp_port,
+                    {"type": "media", "call_id": self.call_id, "from": self.core.settings.user_id,
+                     "from_name": self.core.settings.name}, parent=self))
+
+    # ------------------------------------------------------------ video
+    def _on_media_socket(self, sender, call_id, sock, fb):
+        from .video import MediaLink
+        if self.state == "active" and sender == self.peer_id and call_id == self.call_id and self.link is None:
+            self._adopt_link(MediaLink(self.core.cipher, sock, fb, parent=self))
+        else:
+            sock.abort()
+
+    def _adopt_link(self, link):
+        self.link = link
+        link.frame.connect(self.video_frame)
+        link.state.connect(self._remote_state)
+        link.closed.connect(self._link_closed)
+        QTimer.singleShot(300, self._push_state)
+
+    def _link_closed(self):
+        self.link = None
+        self.remote_video = {"camera": False, "screen": False}
+        self.video_state.emit()
+
+    def _remote_state(self, st):
+        self.remote_video = st
+        self.video_state.emit()
+
+    def _push_state(self):
+        if self.link:
+            self.link.send_state("camera" in self.sources, "screen" in self.sources)
+
+    def is_on(self, kind: str) -> bool:
+        return kind in self.sources
+
+    def toggle_video(self, kind: str) -> bool:
+        """kind = "camera" | "screen". Returns the new on/off state."""
+        if self.state != "active":
+            return False
+        if kind in self.sources:
+            self.sources.pop(kind).stop()
+        else:
+            src = (self.camera_factory if kind == "camera" else self.screen_factory)(self)
+            src.image.connect(lambda img, k=kind: self._local_image(k, img))
+            if hasattr(src, "error"):
+                src.error.connect(lambda msg: self.audio_warning.emit(msg))
+            if not src.start():
+                return False
+            self.sources[kind] = src
+        self._push_state()
+        self.video_state.emit()
+        return kind in self.sources
+
+    def _local_image(self, kind, img):
+        self.local_frame.emit(kind, img)
+        if self.link:
+            self.link.send_image(kind, img)
 
     def _finish(self, reason: str):
         if self.state == "idle":
@@ -267,6 +339,14 @@ class CallController(QObject):
         dur = self.duration
         self.ring_timer.stop()
         self.watch.stop()
+        for src in self.sources.values():
+            src.stop()
+        self.sources.clear()
+        if self.link:
+            self.link.close()
+            self.link = None
+        self.remote_video = {"camera": False, "screen": False}
+        self.video_state.emit()
         if self.session:
             self.session.stop()
             self.session = None

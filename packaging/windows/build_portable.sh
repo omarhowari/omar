@@ -28,6 +28,13 @@ PA="$APP/Lib/site-packages/_sounddevice_data/portaudio-binaries"
 [ -d "$PA" ] && find "$PA" -type f ! -name 'libportaudio64bit.dll' ! -name 'README.md' -delete
 find "$APP/Lib/site-packages" -name '__pycache__' -prune -exec rm -rf {} +
 
+# --- camera support: only Qt Multimedia + the Windows Media Foundation backend (~2.5 MB, no FFmpeg)
+QTV=$(ls "$WHL"/pyside6_essentials-*.whl | sed -E 's/.*essentials-([0-9.]+)-.*/\1/')
+pip download -q --no-deps --only-binary=:all: --platform win_amd64 --python-version 3.13 --implementation cp \
+    -d "$WHL/addons" "PySide6-Addons==$QTV"
+unzip -q -o "$WHL"/addons/pyside6_addons-*.whl "PySide6/Qt6Multimedia.dll" "PySide6/QtMultimedia.pyd" \
+    "PySide6/plugins/multimedia/windowsmediaplugin.dll" -d "$APP/Lib/site-packages"
+
 cp -r "$ROOT/main.py" "$ROOT/tda" "$ROOT/assets" "$APP/app/"
 find "$APP/app" -name '__pycache__' -prune -exec rm -rf {} +
 cp "$ROOT/LICENSE" "$APP/LICENSE.txt"

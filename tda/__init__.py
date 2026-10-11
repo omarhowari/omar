@@ -1,5 +1,5 @@
 """TDA - serverless LAN messenger (open source, MIT)."""
 
 APP_NAME = "TDA"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 PROTOCOL_VERSION = 1

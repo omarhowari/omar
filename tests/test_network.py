@@ -30,7 +30,7 @@ def wait(cond, timeout=10.0):
 def make(name, base, peer_base, password="", tmp=None):
     s = Settings(name=name, group="QA", udp_port=base, tcp_port=base + 1, password=password,
                  extra_hosts=[f"127.0.0.1:{peer_base}"], download_dir=str(Path(tmp) / name))
-    c = NetworkCore(s)
+    c = NetworkCore(s, data_dir=Path(tmp) / f"{name}-data")
     assert c.start(), "start failed"
     return c
 
@@ -50,9 +50,9 @@ def main():
 
     got, status = [], {}
     b.message_received.connect(got.append)
-    a.message_status.connect(lambda mid, ok, err: status.__setitem__(mid, ok))
+    a.message_status.connect(lambda mid, st, pid: status.__setitem__(mid, st))
     mid = a.send_message(b.settings.user_id, "مرحبا يا بنى 👋\nسطر ثاني")
-    assert wait(lambda: got and status.get(mid)), "message failed"
+    assert wait(lambda: got and status.get(mid) == "delivered"), "message failed"
     assert got[0]["text"] == "مرحبا يا بنى 👋\nسطر ثاني" and got[0]["from_name"] == "Ali"
     print("chat ok:", repr(got[0]["text"]))
 
@@ -116,6 +116,64 @@ def main():
     assert wait(lambda: f.settings.user_id in e.peers)
     e.stop(); f.stop()
     print("plain mode ok")
+
+    # 8) store-and-forward: messages and files sent while the receiver is OFFLINE
+    tmp = tempfile.mkdtemp()
+    a = make("Ali", 48160, 48170, "k", tmp)
+    b_settings = Settings(name="Bana", group="QA", udp_port=48170, tcp_port=48171, password="k",
+                          extra_hosts=["127.0.0.1:48160", "127.0.0.1:48180"], download_dir=str(Path(tmp) / "Bana"))
+    bid = b_settings.user_id
+    st = {}
+    a.message_status.connect(lambda mid, s_, pid: st.__setitem__(mid, s_))
+    m1 = a.send_message(bid, "رسالة أثناء عدم الاتصال 1")
+    m2 = a.send_message(bid, "رسالة أثناء عدم الاتصال 2")
+    src = Path(tmp) / "offline.txt"
+    src.write_text("queued file", encoding="utf-8")
+    tq = a.offer_files(bid, [str(src)], peer_name="Bana")
+    assert st.get(m1) == "queued" and a.transfers[tq].state == "queued" and a.pending_count(bid) == 3
+    print("queued while offline ok:", a.pending_count(bid), "items")
+    # A restarts before B comes online -> the queue must survive
+    a.stop()
+    a = NetworkCore(a.settings, data_dir=Path(tmp) / "Ali-data")
+    assert a.start() and a.transfers[tq].state == "queued"
+    a.message_status.connect(lambda mid, s_, pid: st.__setitem__(mid, s_))
+    b = NetworkCore(b_settings, data_dir=Path(tmp) / "Bana-data")
+    inbox, offers = [], []
+    b.message_received.connect(inbox.append)
+    b.transfer_added.connect(offers.append)
+    assert b.start()
+    assert wait(lambda: len(inbox) == 2 and offers, 15), (inbox, offers)
+    assert [m["text"] for m in inbox] == ["رسالة أثناء عدم الاتصال 1", "رسالة أثناء عدم الاتصال 2"]
+    assert wait(lambda: st.get(m2) == "delivered" and a.pending_count(bid) == 0)
+    b.accept_transfer(offers[0])
+    assert wait(lambda: b.transfers[offers[0]].state == "done", 10)
+    print("delivered after reconnect (and after sender restart) ok")
+
+    # 9) groups: create, fan-out messages, member offline gets them later, leave
+    c_settings = Settings(name="Carla", group="QA", udp_port=48180, tcp_port=48181, password="k",
+                          extra_hosts=["127.0.0.1:48160", "127.0.0.1:48170"], download_dir=str(Path(tmp) / "Carla"))
+    cid = c_settings.user_id
+    gid = a.create_group("فريق المتابعة", {bid: "Bana", cid: "Carla"})
+    assert wait(lambda: gid in b.groups)
+    assert b.groups[gid]["name"] == "فريق المتابعة" and set(b.groups[gid]["members"]) == {a.settings.user_id, bid, cid}
+    gm = a.send_group_message(gid, "اجتماع الساعة 10")
+    assert wait(lambda: any(m.get("gid") == gid and m["text"] == "اجتماع الساعة 10" for m in inbox))
+    c = NetworkCore(c_settings, data_dir=Path(tmp) / "Carla-data")
+    c_inbox = []
+    c.message_received.connect(c_inbox.append)
+    assert c.start()
+    assert wait(lambda: gid in c.groups and any(m.get("gid") == gid for m in c_inbox), 15), (c.groups, c_inbox)
+    print("groups ok: offline member received group + message on connect")
+    # B replies to the group: fan-out reaches A and C
+    a_inbox = []
+    a.message_received.connect(a_inbox.append)
+    b.send_group_message(gid, "تمام")
+    assert wait(lambda: any(m.get("gid") == gid for m in a_inbox) and sum(m.get("gid") == gid for m in c_inbox) == 2)
+    c.leave_group(gid)
+    assert wait(lambda: cid not in a.groups[gid]["members"] and cid not in b.groups[gid]["members"])
+    print("group reply + leave ok")
+    for x in (a, b, c):
+        x.stop()
     print("\nALL TESTS PASSED")
 
 

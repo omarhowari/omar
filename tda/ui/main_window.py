@@ -25,12 +25,18 @@ from ..calls import CallController
 from ..network import NetworkCore, Peer
 from .call_window import CallWindow
 from .chat import ChatWidget, local_paths
-from .dialogs import (BroadcastDialog, HistorySearchDialog, SettingsDialog, TransfersDialog,
-                      about_html, open_path)
+from .dialogs import (BroadcastDialog, GroupDialog, HistorySearchDialog, SettingsDialog,
+                      TransfersDialog, about_html, open_path)
 from .theme import app_icon, draw_avatar, draw_logo, status_icon
 
 STATUSES = ("available", "away", "busy")
 OFFLINE_GROUP = "\x00offline"
+GROUPS_HEAD = "\x00groups"
+STATUS_RANK = {"": 0, "failed": 1, "queued": 2, "delivered": 3}
+
+
+def is_group_key(key: str) -> bool:
+    return key.startswith("g:")
 
 
 def idle_seconds() -> float:
@@ -119,6 +125,10 @@ class MainWindow(QMainWindow):
         core.message_status.connect(self.on_message_status)
         core.transfer_added.connect(self.on_transfer_added)
         core.transfer_changed.connect(self.on_transfer_changed)
+        core.group_updated.connect(self.on_group_updated)
+        core.group_removed.connect(self.on_group_removed)
+        self._tree_timer = QTimer(self, singleShot=True, interval=400)   # 1000 users: rebuild at most 2-3x/s
+        self._tree_timer.timeout.connect(self.refresh_tree)
 
         self.calls = CallController(core, parent=self)
         self.call_win = CallWindow(self.calls)
@@ -144,6 +154,7 @@ class MainWindow(QMainWindow):
             return a
 
         act("📢", tr("broadcast"), lambda: self.broadcast())
+        act("👥", tr("new_group"), self.new_group)
         act("📎", tr("send_file"), self.send_file_to_selected)
         act("⇅", tr("transfers"), self.show_transfers)
         act("🔍", tr("history_search"), self.search_history)
@@ -179,7 +190,7 @@ class MainWindow(QMainWindow):
 
         self.search = QLineEdit(placeholderText=tr("search_users"))
         self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(lambda _t: self.refresh_tree())
+        self.search.textChanged.connect(lambda _t: self.schedule_tree())
         sl.addWidget(self.search)
 
         self.tree = PeerTree(lambda pid: pid in self.core.peers)
@@ -286,12 +297,49 @@ class MainWindow(QMainWindow):
     def _peer_info(self, p: Peer) -> str:
         return f"{p.hostname} · {p.host}" if p.hostname else p.host
 
+    def schedule_tree(self):
+        if not self._tree_timer.isActive():
+            self._tree_timer.start()
+
     def refresh_tree(self):
+        self._tree_timer.stop()
+        self.tree.setUpdatesEnabled(False)
+        try:
+            self._rebuild_tree()
+        finally:
+            self.tree.setUpdatesEnabled(True)
+
+    def _rebuild_tree(self):
         q = self.search.text().strip().lower()
         expanded = {self.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole + 1)
                     for i in range(self.tree.topLevelItemCount()) if not self.tree.topLevelItem(i).isExpanded()}
         selected = {it.data(0, Qt.ItemDataRole.UserRole) for it in self.tree.selectedItems()}
         self.tree.clear()
+        # --- chat groups first
+        grp_items = [(gid, g) for gid, g in self.core.groups.items() if not q or q in g["name"].lower()]
+        if grp_items:
+            head = QTreeWidgetItem([f"👥 {tr('groups')}  ({len(grp_items)})"])
+            head.setData(0, Qt.ItemDataRole.UserRole + 1, GROUPS_HEAD)
+            head.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            f = head.font(0)
+            f.setBold(True)
+            head.setFont(0, f)
+            head.setForeground(0, Qt.GlobalColor.darkGray)
+            self.tree.addTopLevelItem(head)
+            for gid, g in sorted(grp_items, key=lambda x: x[1]["name"].lower()):
+                key = "g:" + gid
+                n = self.unread.get(key, 0)
+                online = sum(1 for m in g["members"] if m in self.core.peers)
+                it = QTreeWidgetItem([f"{g['name']}  ({n})" if n else g["name"]])
+                it.setIcon(0, status_icon("available" if online else "offline"))
+                it.setData(0, Qt.ItemDataRole.UserRole, key)
+                it.setToolTip(0, f"{g['name']}\n" + tr("group_members", n=len(g["members"]), online=online))
+                if n:
+                    fb = it.font(0)
+                    fb.setBold(True)
+                    it.setFont(0, fb)
+                head.addChild(it)
+            head.setExpanded(GROUPS_HEAD not in expanded)
         groups: dict[str, list] = {}
         for p in self.core.peers.values():
             groups.setdefault(p.group or "General", []).append((p.id, p.name, p.status, self._peer_info(p)))
@@ -334,7 +382,7 @@ class MainWindow(QMainWindow):
 
     def _selected_peer_ids(self, online_only=True):
         ids = [it.data(0, Qt.ItemDataRole.UserRole) for it in self.tree.selectedItems()]
-        return [i for i in ids if i and (not online_only or i in self.core.peers)]
+        return [i for i in ids if i and not is_group_key(i) and (not online_only or i in self.core.peers)]
 
     def _tree_open(self, item, _col=0):
         pid = item.data(0, Qt.ItemDataRole.UserRole)
@@ -348,6 +396,13 @@ class MainWindow(QMainWindow):
         pid = item.data(0, Qt.ItemDataRole.UserRole)
         m = QMenu(self)
         m.addAction(tr("send"), lambda: self.open_chat(pid))
+        if is_group_key(pid):
+            m.addAction(tr("send_file"), lambda: self.open_chat(pid)._pick_files())
+            m.addAction(tr("group_manage"), lambda: self.manage_group(pid))
+            m.addSeparator()
+            m.addAction(tr("clear_history"), lambda: self.clear_history(pid))
+            m.exec(self.tree.viewport().mapToGlobal(pos))
+            return
         if pid in self.core.peers:
             m.addAction(tr("call_btn"), lambda: self.start_call(pid))
             m.addAction(tr("send_file"), lambda: self.open_chat(pid)._pick_files())
@@ -368,8 +423,13 @@ class MainWindow(QMainWindow):
     def open_chat(self, pid: str, focus=True) -> ChatWidget:
         chat = self.chats.get(pid)
         if chat is None:
-            name = self.core.peers[pid].name if pid in self.core.peers else self.known.get(pid, {}).get("name", "?")
-            chat = ChatWidget(pid, name, self.s.name)
+            if is_group_key(pid):
+                name = self.core.groups.get(pid[2:], {}).get("name", "?")
+            else:
+                name = self.core.peers[pid].name if pid in self.core.peers else self.known.get(pid, {}).get("name", "?")
+            chat = ChatWidget(pid, name, self.s.name, is_group=is_group_key(pid))
+            chat.view.set_background(self.s.chat_bg, self.s.chat_bg_image, self.s.chat_bg_opacity)
+            chat.manage_group.connect(self.manage_group)
             chat.send_text.connect(self.send_text)
             chat.send_paths.connect(self.send_paths)
             chat.start_call.connect(self.start_call)
@@ -389,6 +449,16 @@ class MainWindow(QMainWindow):
     def _update_chat_peer(self, pid):
         chat = self.chats.get(pid)
         if not chat:
+            return
+        if is_group_key(pid):
+            g = self.core.groups.get(pid[2:])
+            if g:
+                online = sum(1 for m in g["members"] if m in self.core.peers)
+                chat.set_group(g["name"], len(g["members"]), online)
+                i = self.tabs.indexOf(chat)
+                n = self.unread.get(pid, 0)
+                self.tabs.setTabText(i, f"👥 {g['name']} ({n})" if n else f"👥 {g['name']}")
+                self.tabs.setTabIcon(i, status_icon("available" if online else "offline"))
             return
         p = self.core.peers.get(pid)
         st = p.status if p else "offline"
@@ -415,7 +485,7 @@ class MainWindow(QMainWindow):
     def _mark_read(self, pid):
         if self.unread.pop(pid, None):
             self._update_chat_peer(pid)
-            self.refresh_tree()
+            self.schedule_tree()
 
     def clear_history(self, pid):
         self.history.clear(pid)
@@ -427,17 +497,27 @@ class MainWindow(QMainWindow):
         mid = uuid.uuid4().hex
         item = {"id": mid, "outgoing": 1, "text": text, "ts": time.time(), "status": "", "multi": multi,
                 "kind": "msg", "peer_name": self.s.name}
-        name = self.core.peers[pid].name if pid in self.core.peers else ""
+        name = self.core.peers[pid].name if pid in self.core.peers else self.known.get(pid, {}).get("name", "")
         self.history.add(mid, pid, name, True, text, item["ts"], "", multi)
         if pid in self.chats:
             self.chats[pid].add(item)
-        self.core.send_message(pid, text, multi=multi, msg_id=mid)
+        if is_group_key(pid):
+            self.core.send_group_message(pid[2:], text, msg_id=mid)
+        else:
+            self.core.send_message(pid, text, multi=multi, msg_id=mid)   # queued automatically if offline
 
     def send_paths(self, pid: str, paths: list):
-        if pid not in self.core.peers:
+        if is_group_key(pid):
+            tids = self.core.offer_group_files(pid[2:], paths)
+            if tids:
+                t = self.core.transfers[tids[0]]
+                title = t.title if not t.title.isdigit() else tr("files_n", n=t.title)
+                self.open_chat(pid)
+                self._sys_line(pid, tr("group_sent_files", title=title, size=human_size(t.total)))
             return
         self.open_chat(pid)
-        self.core.offer_files(pid, paths)     # the file card is added by on_transfer_added
+        # works for offline users too: the offer waits in the outbox until they connect
+        self.core.offer_files(pid, paths, peer_name=self.known.get(pid, {}).get("name", ""))
 
     def send_file_to_selected(self):
         ids = self._selected_peer_ids()
@@ -470,20 +550,66 @@ class MainWindow(QMainWindow):
 
     # ======================================================================= network events
     def on_peer(self, p: Peer):
-        self.known[p.id] = {"id": p.id, "name": p.name, "group": p.group}
-        self.history.remember_contact(p.id, p.name, p.group)
+        k = self.known.get(p.id)
+        if not k or k.get("name") != p.name or k.get("group") != p.group:
+            self.known[p.id] = {"id": p.id, "name": p.name, "group": p.group}
+            self.history.remember_contact(p.id, p.name, p.group)
         self._update_chat_peer(p.id)
-        self.refresh_tree()
+        self.schedule_tree()
 
     def on_peer_removed(self, pid):
         self._update_chat_peer(pid)
-        self.refresh_tree()
+        self.schedule_tree()
+
+    # ---- groups
+    def _people(self) -> dict:
+        people = {pid: (c.get("name", "?"), c.get("group", "")) for pid, c in self.known.items()}
+        people.update({pid: (p.name, p.group) for pid, p in self.core.peers.items()})
+        return people
+
+    def new_group(self):
+        dlg = GroupDialog(self._people(), set(self.core.peers), my_id=self.s.user_id, parent=self)
+        if dlg.exec():
+            gid = self.core.create_group(dlg.name.text(), dlg.members())
+            self.open_chat("g:" + gid)
+            self._sys_line("g:" + gid, tr("group_created", name=self.s.name))
+
+    def manage_group(self, key: str):
+        gid = key[2:] if is_group_key(key) else key
+        g = self.core.groups.get(gid)
+        if not g:
+            return
+        dlg = GroupDialog(self._people(), set(self.core.peers), group=g, my_id=self.s.user_id, parent=self)
+        if not dlg.exec():
+            return
+        if dlg.leave_requested:
+            self.core.leave_group(gid)
+            return
+        new = dlg.members()
+        old = {m for m in g["members"] if m != self.s.user_id}
+        add = {pid: n for pid, n in new.items() if pid not in old}
+        remove = [pid for pid in old if pid not in new]
+        self.core.update_group(gid, name=dlg.name.text(), add=add, remove=remove)
+
+    def on_group_updated(self, gid):
+        self._update_chat_peer("g:" + gid)
+        self.schedule_tree()
+
+    def on_group_removed(self, gid):
+        key = "g:" + gid
+        chat = self.chats.get(key)
+        if chat is not None:
+            self._close_tab(self.tabs.indexOf(chat))
+        self.schedule_tree()
 
     def on_message(self, m: dict):
-        pid = m["from"]
-        if pid not in self.known:
-            self.known[pid] = {"id": pid, "name": m["from_name"], "group": ""}
+        sender = m["from"]
+        if sender not in self.known:
+            self.known[sender] = {"id": sender, "name": m["from_name"], "group": ""}
+        pid = "g:" + m["gid"] if m.get("gid") else sender
         chat = self.open_chat(pid, focus=False)   # loads history first, then we append
+        if chat.has_item(m["id"]):
+            return                                  # duplicate (re-delivered after a lost ack)
         self.history.add(m["id"], pid, m["from_name"], False, m["text"], m["ts"], "", m["multi"])
         chat.add({"id": m["id"], "outgoing": 0, "text": m["text"], "ts": m["ts"], "multi": m["multi"],
                   "kind": "msg", "peer_name": m["from_name"]})
@@ -493,15 +619,19 @@ class MainWindow(QMainWindow):
         if not visible:
             self.unread[pid] = self.unread.get(pid, 0) + 1
             self._update_chat_peer(pid)
-            self.refresh_tree()
+            self.schedule_tree()
             self._alert(tr("new_message_from", name=m["from_name"]), m["text"][:200])
 
-    def on_message_status(self, mid, ok, err):
-        status = "delivered" if ok else "failed"
-        self.history.set_status(mid, status)
+    def on_message_status(self, mid, status, _peer):
+        # group messages report once per member: keep the best state reached so far
         for c in self.chats.values():
-            if c.set_status(mid, status):
-                break
+            for it in c.items:
+                if it.get("id") == mid:
+                    if STATUS_RANK.get(status, 0) > STATUS_RANK.get(it.get("status", ""), 0):
+                        c.set_status(mid, status)
+                        self.history.set_status(mid, status)
+                    return
+        self.history.set_status(mid, status)
 
     # ---- files appear in the conversation as cards with accept / open buttons
     def _card_json(self, t) -> str:
@@ -518,11 +648,17 @@ class MainWindow(QMainWindow):
                                                             if single_top else Path(t.dest_root)))
         return json.dumps(d, ensure_ascii=False)
 
+    def _transfer_key(self, t) -> str:
+        return "g:" + t.gid if t.gid else t.peer_id
+
     def on_transfer_added(self, tid):
         t = self.core.transfers[tid]
+        if t.gid and t.direction == "out":
+            return          # one summary line in the group chat instead of a card per member
         ts = time.time()
-        self.history.add(tid, t.peer_id, t.peer_name, t.direction == "out", self._card_json(t), ts, "", False, "file")
-        chat = self.open_chat(t.peer_id, focus=t.direction == "out")
+        key = self._transfer_key(t)
+        self.history.add(tid, key, t.peer_name, t.direction == "out", self._card_json(t), ts, "", False, "file")
+        chat = self.open_chat(key, focus=t.direction == "out")
         if not chat.has_item(tid):
             chat.add({"id": tid, "kind": "file", "outgoing": t.direction == "out", "text": self._card_json(t),
                       "ts": ts, "peer_name": t.peer_name})
@@ -531,16 +667,16 @@ class MainWindow(QMainWindow):
             msg = tr("incoming_files", name=t.peer_name, title=title, size=human_size(t.total))
             visible = self.isActiveWindow() and self.tabs.currentWidget() is chat
             if not visible:
-                self.unread[t.peer_id] = self.unread.get(t.peer_id, 0) + 1
-                self._update_chat_peer(t.peer_id)
-                self.refresh_tree()
+                self.unread[key] = self.unread.get(key, 0) + 1
+                self._update_chat_peer(key)
+                self.schedule_tree()
             self._alert(tr("transfers"), msg)
 
     def on_transfer_changed(self, tid):
         t = self.core.transfers.get(tid)
-        if not t:
+        if not t or (t.gid and t.direction == "out"):
             return
-        chat = self.chats.get(t.peer_id)
+        chat = self.chats.get(self._transfer_key(t))
         if getattr(t, "_saved_state", None) != t.state:      # persist state changes, not every progress tick
             t._saved_state = t.state
             text = self._card_json(t)
@@ -599,7 +735,7 @@ class MainWindow(QMainWindow):
         if reason == "missed":
             self.unread[pid] = self.unread.get(pid, 0) + 1
             self._update_chat_peer(pid)
-            self.refresh_tree()
+            self.schedule_tree()
             self._alert(tr("call_log_missed"), name)
 
     def _alert(self, title, body):
@@ -657,6 +793,8 @@ class MainWindow(QMainWindow):
         self.me_group.setText(self.s.group)
         self.lbl_sec.setText("🔒 AES-256" if self.s.password else "🔓 " + ("بدون تشفير" if self.s.language == "ar" else "Not encrypted"))
         self.core.apply_settings()
+        for chat in self.chats.values():
+            chat.view.set_background(self.s.chat_bg, self.s.chat_bg_image, self.s.chat_bg_opacity)
         if restart:
             QMessageBox.information(self, APP_NAME, tr("restart_needed"))
 

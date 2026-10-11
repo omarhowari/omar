@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import os
 import platform
+import random
 import socket
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -25,9 +27,12 @@ from .crypto import Cipher
 from .protocol import (CHUNK_SIZE, FrameBuffer, ProtocolError, encode_bin,
                        encode_json, safe_relpath)
 
-ANNOUNCE_INTERVAL_MS = 5000
-PEER_TIMEOUT_S = 18
+ANNOUNCE_MIN_S = 5          # small networks: announce every 5 s
+ANNOUNCE_MAX_S = 30         # 1000+ users: every 30 s (~35 packets/s for the whole LAN)
+PEERS_PER_SECOND = 25       # interval grows by 1 s for every 25 known peers
+PEER_TIMEOUT_MIN_S = 18
 REQUEST_TIMEOUT_MS = 8000
+OUTBOX_RETRY_MS = 60_000
 
 
 # ----------------------------------------------------------------------------- models
@@ -43,6 +48,11 @@ class Peer:
     os: str = ""
     version: str = ""
     last_seen: float = 0.0
+    iv: float = ANNOUNCE_MIN_S          # the peer's announce interval
+
+    @property
+    def timeout(self) -> float:
+        return max(PEER_TIMEOUT_MIN_S, self.iv * 3.2)
 
 
 @dataclass
@@ -61,6 +71,7 @@ class Transfer:
     dest_paths: List[str] = field(default_factory=list)  # absolute paths (in)
     dest_root: str = ""
     started: float = 0.0
+    gid: str = ""                      # group the files were shared in ("" = private chat)
 
     @property
     def finished(self) -> bool:
@@ -332,6 +343,21 @@ class _Incoming(QObject):
             self._fail_rx("connection lost")
         self.close()
 
+    def detach(self):
+        """Hand the raw socket (and any frames already buffered) to someone else, e.g. a call's video link."""
+        self.closed = True
+        self.idle.stop()
+        try:
+            self.sock.readyRead.disconnect(self._read)
+            self.sock.disconnected.disconnect(self._disconnected)
+        except (RuntimeError, TypeError):
+            pass
+        self.core._live.discard(self)
+        sock, fb = self.sock, self.fb
+        sock.setParent(None)
+        self.deleteLater()
+        return sock, fb
+
     def close(self):
         if self.closed:
             return
@@ -344,20 +370,73 @@ class _Incoming(QObject):
         self.deleteLater()
 
 
+# ----------------------------------------------------------------------------- persistent stores
+class Store:
+    """SQLite: outbox (store-and-forward for offline users) and groups."""
+
+    def __init__(self, path: Path):
+        self.db = sqlite3.connect(str(path))
+        self.db.execute("""CREATE TABLE IF NOT EXISTS outbox(
+            id TEXT, peer_id TEXT, obj TEXT, extra TEXT, created REAL, PRIMARY KEY(id, peer_id))""")
+        self.db.execute("CREATE TABLE IF NOT EXISTS groups(gid TEXT PRIMARY KEY, data TEXT)")
+        self.db.commit()
+
+    # outbox
+    def queue(self, item_id, peer_id, obj, extra=None):
+        self.db.execute("INSERT OR REPLACE INTO outbox VALUES(?,?,?,?,?)",
+                        (item_id, peer_id, json.dumps(obj, ensure_ascii=False),
+                         json.dumps(extra or {}, ensure_ascii=False), time.time()))
+        self.db.commit()
+
+    def pending(self, peer_id=None):
+        q = "SELECT id, peer_id, obj, extra FROM outbox"
+        rows = self.db.execute(q + (" WHERE peer_id=?" if peer_id else "") + " ORDER BY created",
+                               (peer_id,) if peer_id else ()).fetchall()
+        return [(r[0], r[1], json.loads(r[2]), json.loads(r[3] or "{}")) for r in rows]
+
+    def done(self, item_id, peer_id):
+        self.db.execute("DELETE FROM outbox WHERE id=? AND peer_id=?", (item_id, peer_id))
+        self.db.commit()
+
+    def peers_with_pending(self):
+        return {r[0] for r in self.db.execute("SELECT DISTINCT peer_id FROM outbox")}
+
+    # groups
+    def save_group(self, g: dict):
+        self.db.execute("INSERT OR REPLACE INTO groups VALUES(?,?)", (g["gid"], json.dumps(g, ensure_ascii=False)))
+        self.db.commit()
+
+    def delete_group(self, gid):
+        self.db.execute("DELETE FROM groups WHERE gid=?", (gid,))
+        self.db.commit()
+
+    def groups(self):
+        return {r[0]: json.loads(r[1]) for r in self.db.execute("SELECT gid, data FROM groups")}
+
+
 # ----------------------------------------------------------------------------- core
 class NetworkCore(QObject):
     peer_updated = Signal(object)          # Peer
     peer_removed = Signal(str)             # peer id
     message_received = Signal(dict)        # {"id","from","from_name","text","ts","multi"}
-    message_status = Signal(str, bool, str)  # msg id, delivered?, error
+    message_status = Signal(str, str, str)   # msg id, "delivered" | "queued" | "failed", peer id
     transfer_added = Signal(str)           # tid
     transfer_changed = Signal(str)         # tid
     error = Signal(str)
     call_message = Signal(str, dict)       # sender id, call_* control message
+    media_socket = Signal(str, str, object, object)   # sender id, call id, QTcpSocket, FrameBuffer
+    group_updated = Signal(str)            # gid
+    group_removed = Signal(str)            # gid
 
-    def __init__(self, settings: Settings, parent: Optional[QObject] = None):
+    def __init__(self, settings: Settings, parent: Optional[QObject] = None, data_dir=None):
         super().__init__(parent)
         self.settings = settings
+        from .config import config_dir
+        self.data_dir = Path(data_dir) if data_dir else config_dir()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.store = Store(self.data_dir / "network.db")
+        self.groups: Dict[str, dict] = self.store.groups()
+        self._flushing: set = set()
         self.cipher = Cipher(settings.password)
         self.peers: Dict[str, Peer] = {}
         self.transfers: Dict[str, Transfer] = {}
@@ -366,8 +445,10 @@ class NetworkCore(QObject):
         self._live: set = set()
         self.udp = QUdpSocket(self)
         self.tcp = QTcpServer(self)
-        self.announce_timer = QTimer(self, interval=ANNOUNCE_INTERVAL_MS)
-        self.announce_timer.timeout.connect(lambda: self.announce("hello"))
+        self.announce_timer = QTimer(self, singleShot=True)
+        self.announce_timer.timeout.connect(self._periodic_announce)
+        self.retry_timer = QTimer(self, interval=OUTBOX_RETRY_MS)
+        self.retry_timer.timeout.connect(self._retry_outbox)
         self.prune_timer = QTimer(self, interval=3000)
         self.prune_timer.timeout.connect(self._prune)
         self.running = False
@@ -380,15 +461,18 @@ class NetworkCore(QObject):
         if not ok_udp:
             self.error.emit(f"UDP {s.udp_port}: {self.udp.errorString()}")
             return False
+        self.udp.setSocketOption(QAbstractSocket.SocketOption.ReceiveBufferSizeSocketOption, 4 * 1024 * 1024)
         self.udp.readyRead.connect(self._read_udp)
         if not self.tcp.listen(QHostAddress(QHostAddress.SpecialAddress.AnyIPv4), s.tcp_port):
             self.error.emit(f"TCP {s.tcp_port}: {self.tcp.errorString()}")
             return False
         self.tcp.newConnection.connect(self._accept)
         self.running = True
+        self._restore_queued_transfers()
         self.announce("hello")
-        self.announce_timer.start()
+        self._schedule_announce()
         self.prune_timer.start()
+        self.retry_timer.start()
         return True
 
     def stop(self):
@@ -401,6 +485,7 @@ class NetworkCore(QObject):
             rcv.cancel()
         self.announce_timer.stop()
         self.prune_timer.stop()
+        self.retry_timer.stop()
         self.tcp.close()
         self.udp.close()
         self.running = False
@@ -415,7 +500,20 @@ class NetworkCore(QObject):
         s = self.settings
         return {"t": kind, "id": s.user_id, "name": s.name, "group": s.group, "status": s.status,
                 "port": s.tcp_port, "host": socket.gethostname(),
-                "os": f"{platform.system()} {platform.release()}", "v": APP_VERSION, "pv": PROTOCOL_VERSION}
+                "os": f"{platform.system()} {platform.release()}", "v": APP_VERSION, "pv": PROTOCOL_VERSION,
+                "iv": round(self.announce_interval(), 1)}
+
+    def announce_interval(self) -> float:
+        """Grows with the number of users so 1000+ computers do not flood the LAN."""
+        return max(ANNOUNCE_MIN_S, min(ANNOUNCE_MAX_S, len(self.peers) / PEERS_PER_SECOND))
+
+    def _schedule_announce(self):
+        iv = self.announce_interval()
+        self.announce_timer.start(int(iv * 1000 * random.uniform(0.8, 1.2)))   # jitter avoids bursts
+
+    def _periodic_announce(self):
+        self.announce("hello")
+        self._schedule_announce()
 
     def _targets(self):
         port = self.settings.udp_port
@@ -473,23 +571,39 @@ class NetworkCore(QObject):
                 continue
             host = _clean_host(dg.senderAddress())
             is_new = pid not in self.peers
-            peer = Peer(id=pid, name=str(msg.get("name", "?"))[:64], group=str(msg.get("group", ""))[:64],
-                        status=str(msg.get("status", "available")), host=host, tcp_port=int(msg.get("port", 0)),
-                        hostname=str(msg.get("host", "")), os=str(msg.get("os", "")), version=str(msg.get("v", "")),
-                        last_seen=time.time())
             old = self.peers.get(pid)
+            name = str(msg.get("name", "?"))[:64]
+            group = str(msg.get("group", ""))[:64]
+            status = str(msg.get("status", "available"))
+            try:
+                port = int(msg.get("port", 0))
+                iv = min(120.0, max(1.0, float(msg.get("iv", ANNOUNCE_MIN_S))))
+            except (TypeError, ValueError):
+                continue
+            if old and (old.name, old.group, old.status, old.host, old.tcp_port) == (name, group, status, host, port):
+                old.last_seen, old.iv = time.time(), iv          # fast path: nothing changed
+                continue
+            peer = Peer(id=pid, name=name, group=group, status=status, host=host, tcp_port=port,
+                        hostname=str(msg.get("host", ""))[:64], os=str(msg.get("os", ""))[:64],
+                        version=str(msg.get("v", ""))[:16], last_seen=time.time(), iv=iv)
             self.peers[pid] = peer
             if is_new and kind == "hello":
-                # answer directly so the newcomer sees us immediately
-                reply = self.cipher.seal(json.dumps(self._hello("here"), ensure_ascii=False).encode("utf-8"))
-                self.udp.writeDatagram(reply, dg.senderAddress(), dg.senderPort())
-            if is_new or (old and (old.name, old.group, old.status, old.host) != (peer.name, peer.group, peer.status, peer.host)):
-                self.peer_updated.emit(peer)
+                # answer the newcomer directly; a random delay spreads 1000 replies over ~1.5 s
+                addr, prt = QHostAddress(dg.senderAddress()), dg.senderPort()
+                QTimer.singleShot(random.randint(0, 1500), lambda a=addr, p=prt: self._reply_here(a, p))
+            self.peer_updated.emit(peer)
+            if is_new and self.store.pending(pid):
+                QTimer.singleShot(random.randint(500, 2000), lambda x=pid: self.flush_outbox(x))
+
+    def _reply_here(self, addr, port):
+        if self.running:
+            reply = self.cipher.seal(json.dumps(self._hello("here"), ensure_ascii=False).encode("utf-8"))
+            self.udp.writeDatagram(reply, addr, port)
 
     def _prune(self):
         now = time.time()
         for pid, p in list(self.peers.items()):
-            if now - p.last_seen > PEER_TIMEOUT_S:
+            if now - p.last_seen > p.timeout:
                 del self.peers[pid]
                 self.peer_removed.emit(pid)
 
@@ -505,10 +619,36 @@ class NetworkCore(QObject):
         if t == "msg":
             text = str(obj.get("text", ""))[:100_000]
             conn.reply({"type": "ack", "id": obj.get("id")})
+            gid = str(obj.get("gid", ""))[:64]
+            if gid and gid not in self.groups:     # group we have not heard of yet
+                self._apply_group({"gid": gid, "name": str(obj.get("gname", "?"))[:80], "version": 0,
+                                   "owner": sender, "members": {sender: str(obj.get("from_name", "?"))[:64],
+                                                                self.settings.user_id: self.settings.name}})
+            try:
+                ts = float(obj.get("ts", time.time()))
+            except (TypeError, ValueError):
+                ts = time.time()
             self.message_received.emit({
                 "id": str(obj.get("id") or uuid.uuid4().hex), "from": sender,
                 "from_name": peer.name if peer else str(obj.get("from_name", "?")),
-                "text": text, "ts": float(obj.get("ts", time.time())), "multi": bool(obj.get("multi"))})
+                "text": text, "ts": ts, "multi": bool(obj.get("multi")), "gid": gid})
+        elif t == "group_update":
+            conn.reply({"type": "ack"})
+            g = obj.get("group")
+            if isinstance(g, dict) and isinstance(g.get("members"), dict):
+                self._apply_group(g)
+        elif t == "group_leave":
+            conn.reply({"type": "ack"})
+            g = self.groups.get(str(obj.get("gid", "")))
+            if g and sender in g["members"]:
+                g["members"].pop(sender, None)
+                g["version"] = int(g.get("version", 0)) + 1
+                self.store.save_group(g)
+                self.group_updated.emit(g["gid"])
+        elif t == "media":
+            conn.reply({"type": "ack"})
+            sock, fb = conn.detach()
+            self.media_socket.emit(sender, str(obj.get("call_id", "")), sock, fb)
         elif t == "file_offer":
             files = []
             try:
@@ -523,7 +663,8 @@ class NetworkCore(QObject):
                 return
             tr = Transfer(tid=tid, direction="in", peer_id=sender,
                           peer_name=peer.name if peer else str(obj.get("from_name", "?")), files=files,
-                          total=sum(f["size"] for f in files), title=str(obj.get("title", ""))[:200])
+                          total=sum(f["size"] for f in files), title=str(obj.get("title", ""))[:200],
+                          gid=str(obj.get("gid", ""))[:64])
             self.transfers[tid] = tr
             conn.reply({"type": "ack"})
             self.transfer_added.emit(tid)
@@ -574,18 +715,77 @@ class NetworkCore(QObject):
         """Send one control message (used by calls)."""
         return self._request(peer_id, dict(obj), on_ok, on_fail)
 
-    def send_message(self, peer_id: str, text: str, multi: bool = False, msg_id: Optional[str] = None) -> str:
+    # ---------------------------------------------------------------- messages (with offline outbox)
+    def send_message(self, peer_id: str, text: str, multi: bool = False, msg_id: Optional[str] = None,
+                     gid: str = "") -> str:
+        """Deliver now if the user is online; otherwise keep it and deliver when they come back."""
         msg_id = msg_id or uuid.uuid4().hex
         obj = {"type": "msg", "id": msg_id, "text": text, "ts": time.time(), "multi": multi}
-        self._request(peer_id, obj,
-                      on_ok=lambda: self.message_status.emit(msg_id, True, ""),
-                      on_fail=lambda err: self.message_status.emit(msg_id, False, err))
+        if gid and gid in self.groups:
+            obj["gid"], obj["gname"] = gid, self.groups[gid]["name"]
+        self._send_or_queue(peer_id, msg_id, obj)
         return msg_id
 
-    def offer_files(self, peer_id: str, paths: List[str]) -> Optional[str]:
-        peer = self.peers.get(peer_id)
-        if not peer:
-            return None
+    def _send_or_queue(self, peer_id: str, item_id: str, obj: dict, extra: Optional[dict] = None):
+        obj.setdefault("from", self.settings.user_id)
+        obj.setdefault("from_name", self.settings.name)
+        self.store.queue(item_id, peer_id, obj, extra)     # written first: survives a crash or restart
+        if peer_id in self.peers and peer_id not in self._flushing:
+            self._deliver(item_id, peer_id, obj)
+        elif obj.get("type") == "msg":
+            self.message_status.emit(item_id, "queued", peer_id)
+
+    def _deliver(self, item_id: str, peer_id: str, obj: dict, on_done=None):
+        def ok():
+            self.store.done(item_id, peer_id)
+            if obj.get("type") == "msg":
+                self.message_status.emit(item_id, "delivered", peer_id)
+            elif obj.get("type") == "file_offer":
+                tr = self.transfers.get(obj.get("tid"))
+                if tr and tr.state == "queued":
+                    tr.state = "offered"
+                    self.transfer_changed.emit(tr.tid)
+            if on_done:
+                on_done(True)
+
+        def fail(_err):
+            if obj.get("type") == "msg":
+                self.message_status.emit(item_id, "queued", peer_id)
+            if on_done:
+                on_done(False)
+
+        if not self._request(peer_id, dict(obj), ok, fail):
+            pass   # _request already called fail("offline")
+
+    def flush_outbox(self, peer_id: str):
+        """Send everything waiting for this user, in the original order."""
+        if peer_id in self._flushing or peer_id not in self.peers:
+            return
+        items = self.store.pending(peer_id)
+        if not items:
+            return
+        self._flushing.add(peer_id)
+
+        def step(i=0):
+            if i >= len(items) or peer_id not in self.peers:
+                self._flushing.discard(peer_id)
+                if i >= len(items) and self.store.pending(peer_id):    # new items arrived meanwhile
+                    QTimer.singleShot(100, lambda: self.flush_outbox(peer_id))
+                return
+            item_id, _pid, obj, _extra = items[i]
+            self._deliver(item_id, peer_id, obj, on_done=lambda ok: step(i + 1) if ok else self._flushing.discard(peer_id))
+        step()
+
+    def _retry_outbox(self):
+        for pid in self.store.peers_with_pending():
+            if pid in self.peers:
+                self.flush_outbox(pid)
+
+    def pending_count(self, peer_id: str) -> int:
+        return len(self.store.pending(peer_id))
+
+    # ---------------------------------------------------------------- files (queued when offline)
+    def offer_files(self, peer_id: str, paths: List[str], gid: str = "", peer_name: str = "") -> Optional[str]:
         sources, files = [], []
         for p in paths:
             p = Path(p)
@@ -606,18 +806,110 @@ class NetworkCore(QObject):
             return None
         tid = uuid.uuid4().hex
         title = Path(paths[0]).name if len(paths) == 1 else f"{len(files)}"
-        tr = Transfer(tid=tid, direction="out", peer_id=peer_id, peer_name=peer.name, files=files,
-                      total=sum(f["size"] for f in files), title=title, sources=sources)
+        peer = self.peers.get(peer_id)
+        tr = Transfer(tid=tid, direction="out", peer_id=peer_id, peer_name=peer.name if peer else peer_name,
+                      files=files, total=sum(f["size"] for f in files), title=title, sources=sources,
+                      state="offered" if peer else "queued", gid=gid)
         self.transfers[tid] = tr
         self.transfer_added.emit(tid)
-
-        def failed(err):
-            tr.state, tr.error = "failed", err
-            self.transfer_changed.emit(tid)
-
-        self._request(peer_id, {"type": "file_offer", "tid": tid, "files": files, "title": title},
-                      on_fail=failed)
+        obj = {"type": "file_offer", "tid": tid, "files": files, "title": title}
+        if gid:
+            obj["gid"] = gid
+        self._send_or_queue(peer_id, tid, obj, extra={"sources": sources, "peer_name": tr.peer_name})
         return tid
+
+    def _restore_queued_transfers(self):
+        """After a restart, files that were waiting for an offline user are still waiting."""
+        for item_id, pid, obj, extra in self.store.pending():
+            if obj.get("type") != "file_offer" or item_id in self.transfers:
+                continue
+            sources = extra.get("sources", [])
+            if not sources or not all(os.path.exists(x) for x in sources):
+                self.store.done(item_id, pid)
+                continue
+            self.transfers[item_id] = Transfer(
+                tid=item_id, direction="out", peer_id=pid, peer_name=extra.get("peer_name", ""),
+                files=obj.get("files", []), total=sum(int(f.get("size", 0)) for f in obj.get("files", [])),
+                title=obj.get("title", ""), sources=sources, state="queued", gid=obj.get("gid", ""))
+
+    # ---------------------------------------------------------------- groups
+    def _apply_group(self, g: dict):
+        gid = str(g.get("gid", ""))[:64]
+        if not gid:
+            return
+        members = {str(k)[:64]: str(v)[:64] for k, v in list(g.get("members", {}).items())[:5000]}
+        cur = self.groups.get(gid)
+        if self.settings.user_id not in members:          # we were removed / left
+            if cur:
+                del self.groups[gid]
+                self.store.delete_group(gid)
+                self.group_removed.emit(gid)
+            return
+        if cur and int(cur.get("version", 0)) > int(g.get("version", 0)):
+            return
+        new = {"gid": gid, "name": str(g.get("name", "?"))[:80], "owner": str(g.get("owner", "")),
+               "version": int(g.get("version", 0)), "members": members}
+        self.groups[gid] = new
+        self.store.save_group(new)
+        self.group_updated.emit(gid)
+
+    def _broadcast_group(self, g: dict, extra_recipients=()):
+        for pid in set(g["members"]) | set(extra_recipients):
+            if pid != self.settings.user_id:
+                self._send_or_queue(pid, f"grp-{g['gid']}-{g['version']}",
+                                    {"type": "group_update", "group": g})
+
+    def create_group(self, name: str, member_ids: Dict[str, str]) -> str:
+        gid = uuid.uuid4().hex
+        members = dict(member_ids)
+        members[self.settings.user_id] = self.settings.name
+        g = {"gid": gid, "name": name.strip()[:80] or "Group", "owner": self.settings.user_id,
+             "version": 1, "members": members}
+        self.groups[gid] = g
+        self.store.save_group(g)
+        self.group_updated.emit(gid)
+        self._broadcast_group(g)
+        return gid
+
+    def update_group(self, gid: str, name: Optional[str] = None, add: Optional[Dict[str, str]] = None,
+                     remove=()):
+        g = self.groups.get(gid)
+        if not g:
+            return
+        removed = [r for r in remove if r in g["members"] and r != self.settings.user_id]
+        if name:
+            g["name"] = name.strip()[:80]
+        g["members"].update(add or {})
+        for r in removed:
+            g["members"].pop(r, None)
+        g["version"] = int(g.get("version", 0)) + 1
+        self.store.save_group(g)
+        self.group_updated.emit(gid)
+        self._broadcast_group(g, extra_recipients=removed)    # removed members learn they are out
+
+    def leave_group(self, gid: str):
+        g = self.groups.pop(gid, None)
+        if not g:
+            return
+        self.store.delete_group(gid)
+        for pid in g["members"]:
+            if pid != self.settings.user_id:
+                self._send_or_queue(pid, f"leave-{gid}", {"type": "group_leave", "gid": gid})
+        self.group_removed.emit(gid)
+
+    def send_group_message(self, gid: str, text: str, msg_id: Optional[str] = None) -> str:
+        msg_id = msg_id or uuid.uuid4().hex
+        for pid in self.groups.get(gid, {}).get("members", {}):
+            if pid != self.settings.user_id:
+                self.send_message(pid, text, msg_id=msg_id, gid=gid)
+        return msg_id
+
+    def offer_group_files(self, gid: str, paths: List[str]) -> List[str]:
+        g = self.groups.get(gid)
+        if not g:
+            return []
+        return [t for pid, name in g["members"].items() if pid != self.settings.user_id
+                for t in [self.offer_files(pid, paths, gid=gid, peer_name=name)] if t]
 
     def accept_transfer(self, tid: str, dest_dir: Optional[str] = None):
         tr = self.transfers.get(tid)
@@ -679,6 +971,8 @@ class NetworkCore(QObject):
             self.reject_transfer(tid)
             return
         prev = tr.state
+        if prev == "queued":
+            self.store.done(tid, tr.peer_id)
         tr.state = "canceled"
         self.transfer_changed.emit(tid)
         if tr.direction == "out" and prev == "offered":

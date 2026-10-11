@@ -10,7 +10,8 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["TDA_CONFIG_DIR"] = tempfile.mkdtemp()
-from PySide6.QtCore import QEventLoop, Qt  # noqa: E402
+from PySide6.QtCore import QEventLoop, QObject, Qt, QTimer, Signal  # noqa: E402
+from PySide6.QtGui import QColor, QImage, QPainter  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from tda.config import Settings  # noqa: E402
@@ -45,8 +46,8 @@ specs = [("عمار" if lang == "ar" else "Ammar", "IT", 48300, 48310, "availabl
 for name, group, port, peer, st in specs:
     s = Settings(name=name, group=group, udp_port=port, tcp_port=port + 1, password="k",
                  extra_hosts=[f"127.0.0.1:{peer}", "127.0.0.1:48300", "127.0.0.1:48310"], download_dir=str(tmp / name),
-                 status=st, language=lang)
-    core = NetworkCore(s)
+                 status=st, language=lang, setup_done=True)
+    core = NetworkCore(s, data_dir=tmp / f"data{port}")
     assert core.start()
     w = MainWindow(s, core, History(tmp / f"{port}.db"))
     wins.append(w)
@@ -104,6 +105,41 @@ class Silent(AudioBackend):
     def play(self, fr): pass
     def stop(self): self.run = False
 a.calls.backend_factory = b.calls.backend_factory = Silent
+
+
+class FakeVideo(QObject):
+    image = Signal(object)
+
+    def __init__(self, parent=None, kind="screen"):
+        super().__init__(parent)
+        self.kind = kind
+        self.t = QTimer(self, interval=150)
+        self.t.timeout.connect(self._f)
+
+    def start(self):
+        self.t.start()
+        return True
+
+    def stop(self):
+        self.t.stop()
+
+    def _f(self):
+        if self.kind == "screen":       # a fake "shared screen": the other user's main window
+            img = a.grab().toImage()
+        else:
+            img = QImage(640, 480, QImage.Format.Format_RGB32)
+            img.fill(QColor("#0E4D3C"))
+            p = QPainter(img)
+            p.setBrush(QColor("#B8A068"))
+            p.drawEllipse(220, 120, 200, 240)
+            p.end()
+        self.image.emit(img)
+
+
+a.calls.screen_factory = lambda parent: FakeVideo(parent, "screen")
+b.calls.camera_factory = lambda parent: FakeVideo(parent, "camera")
+import tda.video as _v
+_v.CameraSource.available = staticmethod(lambda: True)
 a.start_call(bid)
 pump(1)
 assert b.calls.state == "incoming"
@@ -111,10 +147,42 @@ b.call_win.grab().save(str(out / f"screen_{lang}_call_incoming.png"))
 b.calls.accept()
 pump(2.2)
 a.call_win.grab().save(str(out / f"screen_{lang}_call_active.png"))
+a.calls.toggle_video("screen")
+b.calls.toggle_video("camera")
+pump(2.5)
+assert b.call_win.video.isVisible() and b.call_win.video.main.img is not None, "video window did not show frames"
+b.call_win.video.resize(1000, 620)
+pump(0.5)
+b.call_win.video.grab().save(str(out / f"screen_{lang}_video.png"))
+print("video window ok")
 a.calls.hangup()
 pump(1)
 assert a.calls.state == b.calls.state == "idle"
 print("call ok")
+# --- groups: A creates a group with B and Khaled, sends a message; B sees the group chat
+gid = a.core.create_group("فريق المتابعة والتقييم" if lang == "ar" else "MEAL team",
+                          {bid: b.s.name, wins[2].s.user_id: wins[2].s.name})
+pump(1.5)
+assert gid in b.core.groups
+a.send_text("g:" + gid, "صباح الخير للجميع، الاجتماع الساعة 10" if lang == "ar" else "Good morning all, meeting at 10")
+pump(1)
+wins[2].send_text("g:" + gid, "تمام 👍" if lang == "ar" else "OK 👍")
+pump(1.5)
+assert "g:" + gid in b.chats and sum(1 for it in b.chats["g:" + gid].items if it.get("kind") == "msg") == 2
+print("group chat ok")
+
+# --- offline: Layla closes TDA; A writes to her anyway -> queued
+lid = wins[3].s.user_id
+wins[3].core.stop()
+pump(1)
+assert lid not in a.core.peers
+a.open_chat(lid)
+a.send_text(lid, "سأرسل لك التقرير عند عودتك" if lang == "ar" else "I'll send you the report when you're back")
+pump(0.5)
+assert a.chats[lid].items[-1]["status"] == "queued", a.chats[lid].items[-1]
+a.chats[lid].grab().save(str(out / f"screen_{lang}_offline.png"))
+print("offline queue ok")
+
 # a broadcast from Khaled so B shows a broadcast bubble
 wins[2].send_text(bid, "اجتماع الفريق الساعة 11" if lang == "ar" else "Team meeting at 11", multi=True)
 pump(1)
@@ -124,6 +192,11 @@ for w in wins[:2]:
     w.show()
 b.open_chat(a.s.user_id)
 pump(0.5)
+b.open_chat("g:" + gid)
+pump(0.3)
+b.grab().save(str(out / f"screen_{lang}_group.png"))
+b.open_chat(a.s.user_id)
+pump(0.3)
 a.grab().save(str(out / f"screen_{lang}_main.png"))
 
 b.grab().save(str(out / f"screen_{lang}_peer.png"))

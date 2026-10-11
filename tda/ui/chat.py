@@ -10,13 +10,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QImage
+from PySide6.QtCore import QRect, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
                                QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..i18n import human_size, lang, tr
-from .theme import ACCENT, GOLD, status_icon
+from .theme import ACCENT, GOLD, chat_pattern, status_icon
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 FILE_ICONS = {".pdf": "📕", ".doc": "📘", ".docx": "📘", ".xls": "📗", ".xlsx": "📗", ".csv": "📗",
@@ -42,6 +42,50 @@ def _render_text(text: str) -> str:
         pos = m.end()
     out.append(html.escape(text[pos:]))
     return "".join(out).replace("\n", "<br>")
+
+
+class ChatView(QTextBrowser):
+    """Message area with an optional fixed background (pattern or picture) at adjustable opacity."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ChatView")
+        self._bg: QPixmap | None = None
+        self._tile = True
+        self._opacity = 1.0
+        self.viewport().setAutoFillBackground(False)
+
+    def set_background(self, mode: str, image: str = "", opacity: int = 100):
+        """mode: "pattern" | "image" | "none"."""
+        self._opacity = max(0.0, min(1.0, opacity / 100))
+        self._bg, self._tile = None, True
+        if mode == "pattern":
+            self._bg = chat_pattern()
+        elif mode == "image" and image and os.path.exists(image):
+            pm = QPixmap(image)
+            if not pm.isNull():
+                self._bg, self._tile = pm, False
+        self.viewport().update()
+
+    def paintEvent(self, e):
+        p = QPainter(self.viewport())
+        r = self.viewport().rect()
+        p.fillRect(r, QColor("#F8FAFC"))
+        if self._bg is not None and not self._bg.isNull() and self._opacity > 0:
+            p.setOpacity(self._opacity)
+            if self._tile:
+                p.drawTiledPixmap(r, self._bg)
+            else:   # cover the whole area, keep proportions
+                sc = self._bg.scaled(r.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                     Qt.TransformationMode.SmoothTransformation)
+                p.drawPixmap(QRect((r.width() - sc.width()) // 2, (r.height() - sc.height()) // 2,
+                                   sc.width(), sc.height()), sc)
+        p.end()
+        super().paintEvent(e)
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        self.viewport().update()          # keep the background fixed while scrolling
 
 
 class MessageInput(QPlainTextEdit):
@@ -85,10 +129,12 @@ class ChatWidget(QWidget):
     send_paths = Signal(str, list)      # peer_id, [paths]
     start_call = Signal(str)            # peer_id
     transfer_action = Signal(str, str)  # action, tid
+    manage_group = Signal(str)          # chat key "g:<gid>"
 
-    def __init__(self, peer_id: str, peer_name: str, my_name: str, parent=None):
+    def __init__(self, peer_id: str, peer_name: str, my_name: str, parent=None, is_group: bool = False):
         super().__init__(parent)
         self.peer_id, self.peer_name, self.my_name = peer_id, peer_name, my_name
+        self.is_group = is_group
         self.items: list[dict] = []
         self.online = False
         self.transfer_lookup = lambda tid: None
@@ -112,8 +158,13 @@ class ChatWidget(QWidget):
         self.btn_call.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_call.clicked.connect(lambda: self.start_call.emit(self.peer_id))
         hl.addWidget(self.btn_call)
+        self.btn_manage = QPushButton(tr("group_manage"))
+        self.btn_manage.clicked.connect(lambda: self.manage_group.emit(self.peer_id))
+        hl.addWidget(self.btn_manage)
+        self.btn_call.setVisible(not is_group)
+        self.btn_manage.setVisible(is_group)
 
-        self.view = QTextBrowser(objectName="ChatView")
+        self.view = ChatView()
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self._link)
         self.view.setAcceptDrops(False)
@@ -170,9 +221,16 @@ class ChatWidget(QWidget):
         self.online = status != "offline"
         self.status_lbl.setPixmap(status_icon(status).pixmap(18, 18))
         self.sub.setText(f"{tr('status_' + status)}  ·  {info}" if info else tr("status_" + status))
-        for w in (self.btn_send, self.btn_file, self.btn_folder, self.btn_call):
-            w.setEnabled(self.online)
-        self.input.setPlaceholderText(tr("type_message") if self.online else tr("peer_offline"))
+        self.btn_call.setEnabled(self.online)     # messages and files can wait; calls cannot
+        self.input.setPlaceholderText(tr("type_message") if self.online else tr("peer_offline_queue"))
+
+    def set_group(self, name: str, members: int, online: int):
+        self.peer_name = name
+        self.title.setText("👥 " + name)
+        self.online = True
+        self.status_lbl.setPixmap(status_icon("available" if online else "offline").pixmap(18, 18))
+        self.sub.setText(tr("group_members", n=members, online=online))
+        self.input.setPlaceholderText(tr("type_message"))
 
     def load(self, rows: list[dict]):
         self.items = rows
@@ -241,6 +299,7 @@ class ChatWidget(QWidget):
             if mine:
                 st = it.get("status")
                 tick = (' <span style="color:#16A34A">✓</span>' if st == "delivered" else
+                        f' <span style="color:#B45309">⏳ {tr("queued")}</span>' if st == "queued" else
                         f' <span style="color:#DC2626">✗ {tr("not_delivered")}</span>' if st == "failed" else
                         ' <span style="color:#9CA3AF">…</span>')
             multi = f' <span style="color:#7C3AED">[{tr("multi_tag")}]</span>' if it.get("multi") else ""
@@ -286,7 +345,7 @@ class ChatWidget(QWidget):
         live = self.transfer_lookup(tid)
         mine = bool(it.get("outgoing"))
         state = live.state if live else d.get("state", "failed")
-        if not live and state in ("offered", "accepted", "active"):
+        if not live and state in ("offered", "accepted", "active", "queued"):
             state = "failed"            # app was restarted mid-transfer
         title = d.get("title", "?")
         n = int(d.get("count", 1))
@@ -295,7 +354,10 @@ class ChatWidget(QWidget):
         size = human_size(int(d.get("size", 0)))
         a = lambda act, label, color=ACCENT: (f'<a href="tda:{act}:{tid}" style="color:{color};'
                                               f'text-decoration:none"><b>{label}</b></a>')
-        if state == "offered":
+        if state == "queued":
+            line = (f'<span style="color:#B45309">⏳ {tr("tr_queued")}</span> &nbsp; '
+                    f'{a("cancel", "✖ " + tr("cancel"), "#B91C1C")}')
+        elif state == "offered":
             if mine:
                 line = f'{tr("tr_offered_out")} &nbsp; {a("cancel", "✖ " + tr("cancel"), "#B91C1C")}'
             else:

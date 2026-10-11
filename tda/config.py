@@ -60,6 +60,10 @@ class Settings:
     app_title: str = ""                     # custom name shown in the title bar (branding)
     admin_hash: str = ""                    # PBKDF2 hash of the branding/admin password
     admin_salt: str = ""
+    setup_done: bool = False                # first-run name/department asked
+    chat_bg: str = "pattern"                # "pattern" | "image" | "none"
+    chat_bg_image: str = ""
+    chat_bg_opacity: int = 80               # 0..100
 
     @classmethod
     def path(cls) -> Path:
