@@ -1,0 +1,35 @@
+# Push this project to GitHub → Actions builds WaraqPDF for Windows automatically.
+# Download the result from the run's "Artifacts" section (WaraqPDF-windows.zip and the Setup.exe).
+name: Build Windows app
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build exe
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name WaraqPDF
+          --icon assets\icon.ico --add-data "assets;assets"
+          --collect-all pymupdf --collect-submodules pyhanko --collect-data pyhanko
+          --collect-submodules pdf2docx --hidden-import win32com.client --exclude-module scipy --exclude-module pandas --exclude-module matplotlib --exclude-module onnxruntime --exclude-module tkinter --exclude-module IPython
+          main.py
+      - name: Build installer
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaraqPDF-windows
+          path: |
+            dist/WaraqPDF
+            Output/*.exe
