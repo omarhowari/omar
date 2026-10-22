@@ -4,6 +4,8 @@ name: Build Windows app
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: windows-latest
@@ -33,3 +35,10 @@ jobs:
           path: |
             dist/WaraqPDF
             Output/*.exe
+      - name: Publish installer as a GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="waraq-pdf-v1.0.${{ github.run_number }}"
+          gh release create "$TAG" Output/*.exe --target "${{ github.sha }}" --title "Waraq PDF $TAG" --notes "Windows installer for Waraq PDF (ورق PDF)."
