@@ -39,6 +39,22 @@ internal static class Smoke
         return false;
     }
 
+    private static void Dump(string path, string label)
+    {
+        using (PdfDocument d = PdfSharp.Pdf.IO.PdfReader.Open(path, PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import))
+        {
+            for (int i = 0; i < d.PageCount; i++)
+            {
+                PdfPage p = d.Pages[i];
+                Console.WriteLine("  [" + label + "] page " + (i + 1) + " raw MediaBox=" + p.Elements["/MediaBox"] + " raw Rotate=" + p.Elements["/Rotate"] +
+                                  " | MediaBox prop=" + p.MediaBox + " Width=" + p.Width.Point + " Height=" + p.Height.Point + " Orientation=" + p.Orientation);
+            }
+        }
+        using (var stream = new MemoryStream(File.ReadAllBytes(path)))
+        using (var doc = PdfiumViewer.PdfDocument.Load(stream))
+            for (int i = 0; i < doc.PageCount; i++) Console.WriteLine("  [" + label + "] pdfium size " + (i + 1) + " = " + doc.PageSizes[i]);
+    }
+
     private static bool IsBoxColour(Color c)
     {
         return c.R > 240 && c.G > 235 && c.B > 170 && c.B < 220;   // ~ (255, 249, 196)
@@ -62,16 +78,19 @@ internal static class Smoke
         string work = Path.Combine(dir, "work.pdf");
         File.Copy(src, work, true);
 
+        Dump(work, "before rotate");
         // rotation
         PdfOps.RotatePages(work, new[] { 1 }, 90);
         PdfOps.RotatePages(work, new[] { 2 }, 180);
         PdfOps.RotatePages(work, new[] { 3 }, 270);
+        Dump(work, "after rotate");
         List<PageGeometry> geo = PdfOps.ReadGeometry(work);
         Check(geo[0].Rotation == 0 && geo[1].Rotation == 90 && geo[2].Rotation == 180 && geo[3].Rotation == 270, "rotation values stored");
 
         // comments on every rotation, all at displayed (100, 120)
         for (int i = 0; i < 4; i++)
             PdfOps.AddTextComment(work, i, 100, 120, "Hello comment " + i, 12, Color.Black, Color.FromArgb(255, 249, 196), "CI");
+        Dump(work, "after comments");
         for (int i = 0; i < 4; i++)
         {
             using (Bitmap bmp = Render(work, i))
