@@ -770,6 +770,25 @@ class TitleBar(QWidget):
         h.addWidget(self.title)
         h.addStretch(1)
         from PySide6.QtWidgets import QLineEdit, QCompleter
+        # Quick Find / Quick Launch toolbar
+        for cmd, ic, tip, menu in (("ui_options", "tools", A("UI options", "خيارات الواجهة"), "ui_menu"),
+                                   ("fullscreen_btn", "fullscreen", A("Full screen", "ملء الشاشة"), None),
+                                   ("quick_find", "search", A("Find", "بحث"), None),
+                                   ("panel_search", "comparedoc", A("Search pane", "جزء البحث"), None),
+                                   ("toggle_ribbon", "panel", A("Show / hide ribbon", "إظهار/إخفاء الشريط"), None)):
+            b = QToolButton()
+            b.setObjectName("qa")
+            b.setIcon(cicon(ic))
+            b.setIconSize(QSize(18, 18))
+            b.setToolTip(tip)
+            b.setAutoRaise(True)
+            if menu:
+                b.setMenu(getattr(main, "_" + menu)())
+                b.setPopupMode(QToolButton.InstantPopup)
+            else:
+                b.clicked.connect(lambda _=False, c=cmd: main.cmd(c))
+            h.addWidget(b)
+        h.addSpacing(4)
         self.quick = QLineEdit()
         self.quick.setObjectName("quickstart")
         self.quick.setPlaceholderText(A("Quick launch (Ctrl+.)", "بداية سريعة (Ctrl+.)"))

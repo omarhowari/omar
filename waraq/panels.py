@@ -663,3 +663,168 @@ class PropertiesPanel(QWidget):
                                       opacity=self.opacity.value() / 100, width=self.width.value(),
                                       fontsize=self.fontsize.value(), author=self.author.text(),
                                       content=self.content.toPlainText()))
+
+
+# ============================================================== fields / signatures / layers panes
+class FieldsPanel(QWidget):
+    goTo = Signal(int, object)
+
+    def __init__(self):
+        super().__init__()
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels([tr("Name"), tr("Type"), tr("Value")])
+        self.tree.setRootIsDecorated(False)
+        self.tree.itemClicked.connect(self._clicked)
+        v.addWidget(self.tree)
+        self.doc = None
+
+    def set_document(self, doc):
+        self.doc = doc
+        self.rebuild()
+
+    def rebuild(self):
+        self.tree.clear()
+        if not self.doc:
+            return
+        for i in range(self.doc.page_count):
+            pg = self.doc[i]
+            for w in pg.widgets():
+                it = QTreeWidgetItem([w.field_name or "", w.field_type_string, str(w.field_value or "")])
+                it.setData(0, Qt.UserRole, (i, tuple(w.rect)))
+                self.tree.addTopLevelItem(it)
+        for c in range(3):
+            self.tree.resizeColumnToContents(c)
+
+    def _clicked(self, it):
+        d = it.data(0, Qt.UserRole)
+        if d:
+            self.goTo.emit(d[0], fitz.Rect(d[1]))
+
+
+class SignaturesPanel(QWidget):
+    goTo = Signal(int, object)
+    verifyRequested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(6, 4, 6, 0)
+        bar.addStretch()
+        bar.addWidget(_small_btn("info", tr("Verify"), lambda: self.verifyRequested.emit()))
+        v.addLayout(bar)
+        self.list = QListWidget()
+        self.list.itemClicked.connect(self._clicked)
+        v.addWidget(self.list)
+        self.doc = None
+
+    def set_document(self, doc):
+        self.doc = doc
+        self.rebuild()
+
+    def rebuild(self):
+        self.list.clear()
+        if not self.doc:
+            return
+        for i in range(self.doc.page_count):
+            pg = self.doc[i]
+            for w in pg.widgets():
+                if w.field_type == fitz.PDF_WIDGET_TYPE_SIGNATURE:
+                    signed = bool(getattr(w, "is_signed", False))
+                    it = QListWidgetItem(icon("sign"), f"{w.field_name}  —  {tr('Signed') if signed else tr('Empty')}  ({tr('Page')} {i + 1})")
+                    it.setData(Qt.UserRole, (i, tuple(w.rect)))
+                    self.list.addItem(it)
+            for a in pg.annots():
+                if a.info.get("subject") == "Signature":
+                    it = QListWidgetItem(icon("pencil"), f"{tr('Signature')} ({tr('Page')} {i + 1})")
+                    it.setData(Qt.UserRole, (i, tuple(a.rect)))
+                    self.list.addItem(it)
+        if not self.list.count():
+            it = QListWidgetItem(tr("No signatures"))
+            it.setFlags(Qt.NoItemFlags)
+            self.list.addItem(it)
+
+    def _clicked(self, it):
+        d = it.data(Qt.UserRole)
+        if d:
+            self.goTo.emit(d[0], fitz.Rect(d[1]))
+
+
+class LayersPanel(QWidget):
+    changed = Signal()
+
+    def __init__(self):
+        super().__init__()
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.itemChanged.connect(self._toggled)
+        v.addWidget(self.tree)
+        self.doc = None
+        self._silent = False
+
+    def set_document(self, doc):
+        self.doc = doc
+        self.rebuild()
+
+    def rebuild(self):
+        self._silent = True
+        self.tree.clear()
+        if self.doc:
+            try:
+                ui = self.doc.layer_ui_configs()
+            except Exception:
+                ui = []
+            for e in ui:
+                it = QTreeWidgetItem([e.get("text", "")])
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(0, Qt.Checked if e.get("on") else Qt.Unchecked)
+                it.setData(0, Qt.UserRole, e.get("number"))
+                self.tree.addTopLevelItem(it)
+            if not ui:
+                it = QTreeWidgetItem([tr("This document has no layers")])
+                it.setFlags(Qt.NoItemFlags)
+                self.tree.addTopLevelItem(it)
+        self._silent = False
+
+    def _toggled(self, it, _c):
+        if self._silent or it.data(0, Qt.UserRole) is None:
+            return
+        self.doc.set_layer_ui_config(it.data(0, Qt.UserRole), 0 if it.checkState(0) == Qt.Checked else 2)
+        self.changed.emit()
+
+
+class PaneTab(QToolButton):
+    """Vertical pane tab: icon on top, caption written vertically (docked-pane strip)."""
+
+    def __init__(self, ic, text):
+        super().__init__()
+        self._ic = ic
+        self._text = text
+        self.setCheckable(True)
+        self.setToolTip(text)
+        self.setObjectName("panetab")
+        fm = self.fontMetrics()
+        self.setFixedWidth(30)
+        self.setFixedHeight(28 + fm.horizontalAdvance(text) + 12)
+
+    def paintEvent(self, e):
+        from PySide6.QtGui import QPainter, QColor
+        p = QPainter(self)
+        r = self.rect()
+        if self.isChecked():
+            p.fillRect(r, QColor("#F9D9A6"))
+            p.setPen(QColor("#E3B661"))
+            p.drawRect(r.adjusted(0, 0, -1, -1))
+        elif self.underMouse():
+            p.fillRect(r, QColor("#FDE9C4"))
+        icon(self._ic).paint(p, (r.width() - 18) // 2, 5, 18, 18)
+        p.setPen(QColor("#1F2937"))
+        p.translate(r.width() / 2 + 5, 28)
+        p.rotate(90)
+        p.drawText(0, 0, self._text)
+        p.end()

@@ -6,7 +6,7 @@ import os
 import pymupdf as fitz
 from PySide6.QtCore import Qt, QSize, Signal, QTimer, QUrl
 from PySide6.QtGui import QGuiApplication, QDesktopServices, QColor
-from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QStackedWidget, QToolButton,
+from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QStackedWidget, QToolButton, QLabel,
                                QButtonGroup, QInputDialog, QMessageBox, QFileDialog, QMenu, QFrame)
 
 from . import ops
@@ -14,7 +14,7 @@ from .dialogs import ask, SignatureDialog
 from .i18n import tr
 from .icons import icon
 from .panels import (ThumbnailPanel, BookmarkPanel, CommentsPanel, SearchPanel, AttachmentsPanel,
-                     PropertiesPanel)
+                     PropertiesPanel, FieldsPanel, SignaturesPanel, LayersPanel, PaneTab)
 from .viewer import PageView
 
 
@@ -61,25 +61,38 @@ class DocTab(QWidget):
         self.comments = CommentsPanel()
         self.search = SearchPanel()
         self.attach = AttachmentsPanel()
+        self.fields = FieldsPanel()
+        self.sigs = SignaturesPanel()
+        self.layers = LayersPanel()
         self.rail_group = QButtonGroup(self)
-        for k, (w, ic, tip) in enumerate(((self.thumbs, "thumbs", tr("Thumbnails")),
+        rv.setContentsMargins(1, 4, 1, 4)
+        rv.setSpacing(2)
+        self.pane_titles = []
+        for k, (w, ic, tip) in enumerate(((self.thumbs, "thumbs", tr("Pages")),
                                           (self.books, "bookmark", tr("Bookmarks")),
                                           (self.comments, "comments", tr("Comments")),
                                           (self.search, "search", tr("Search")),
-                                          (self.attach, "attach", tr("Attachments")))):
+                                          (self.attach, "attach", tr("Attachments")),
+                                          (self.fields, "textbox", tr("Fields")),
+                                          (self.sigs, "sign", tr("Signatures")),
+                                          (self.layers, "overlay", tr("Layers")))):
             self.stack.addWidget(w)
-            b = QToolButton()
-            b.setIcon(icon(ic))
-            b.setProperty("ic", ic)
-            b.setIconSize(QSize(20, 20))
-            b.setToolTip(tip)
-            b.setCheckable(True)
-            b.setFixedSize(38, 38)
+            self.pane_titles.append(tip)
+            b = PaneTab(ic, tip)
             b.clicked.connect(lambda _=False, i=k: self.show_panel(i))
             self.rail_group.addButton(b, k)
             rv.addWidget(b)
         rv.addStretch()
         self.rail_group.button(0).setChecked(True)
+        # docked pane = header (title, options, close) + content
+        self.pane = QFrame()
+        self.pane.setObjectName("pane")
+        pv = QVBoxLayout(self.pane)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(0)
+        self.pane_hdr = self._pane_header(tr("Pages"), lambda: self.show_panel(self.stack.currentIndex()))
+        pv.addWidget(self.pane_hdr)
+        pv.addWidget(self.stack, 1)
 
         self.view = PageView()
         from .icons import THEME_COLOR
@@ -87,11 +100,18 @@ class DocTab(QWidget):
             self.view.setBackgroundBrush(QColor("#2B2F36"))
         self.props = PropertiesPanel(style)
         self.props.setObjectName("props")
+        self.props_pane = QFrame()
+        self.props_pane.setObjectName("pane")
+        ppv = QVBoxLayout(self.props_pane)
+        ppv.setContentsMargins(0, 0, 0, 0)
+        ppv.setSpacing(0)
+        ppv.addWidget(self._pane_header(tr("Properties"), lambda: self.main.actions["toggle_props"].trigger()))
+        ppv.addWidget(self.props, 1)
 
         self.split = QSplitter(Qt.Horizontal)
-        self.split.addWidget(self.stack)
+        self.split.addWidget(self.pane)
         self.split.addWidget(self.view)
-        self.split.addWidget(self.props)
+        self.split.addWidget(self.props_pane)
         self.split.setStretchFactor(1, 1)
         self.split.setSizes([260, 900, 260])
         self.split.setCollapsible(1, False)
@@ -130,8 +150,41 @@ class DocTab(QWidget):
         self.comments.set_document(pdf.doc)
         self.search.set_document(pdf.doc)
         self.attach.set_document(pdf)
+        for p_ in (self.fields, self.sigs, self.layers):
+            p_.set_document(pdf.doc)
+        self.fields.goTo.connect(lambda p, r: v.go_to_rect(p, r))
+        self.sigs.goTo.connect(lambda p, r: v.go_to_rect(p, r))
+        self.sigs.verifyRequested.connect(lambda: self.main.cmd("verify"))
+        self.layers.changed.connect(lambda: self.view.invalidate(-1))
+        v.pointerMoved.connect(self.main.pointer_moved)
 
-    # ------------------------------------------------------------------ helpers
+    def _pane_header(self, title, close):
+        hdr = QFrame()
+        hdr.setObjectName("panehdr")
+        hh = QHBoxLayout(hdr)
+        hh.setContentsMargins(8, 2, 2, 2)
+        hh.setSpacing(2)
+        lab = QLabel(title)
+        lab.setObjectName("panetitle")
+        hh.addWidget(lab)
+        hh.addStretch()
+        for txt, tip, slot in (("▾", tr("Options"), None), ("✕", tr("Close"), close)):
+            b = QToolButton()
+            b.setObjectName("panebtn")
+            b.setText(txt)
+            b.setToolTip(tip)
+            b.setAutoRaise(True)
+            if slot:
+                b.clicked.connect(slot)
+            else:
+                m = QMenu(self)
+                for k, name in enumerate(self.pane_titles if hasattr(self, "pane_titles") else []):
+                    m.addAction(name, lambda i=k: self.show_panel(i))
+                b.setMenu(m)
+                b.setPopupMode(QToolButton.InstantPopup)
+            hh.addWidget(b)
+        hdr.title_label = lab
+        return hdr
     @property
     def doc(self):
         return self.pdf.doc
@@ -141,14 +194,16 @@ class DocTab(QWidget):
         return self.view.current
 
     def show_panel(self, i):
-        if self.stack.isVisible() and self.stack.currentIndex() == i:
-            self.stack.setVisible(False)
+        if self.pane.isVisible() and self.stack.currentIndex() == i:
+            self.pane.setVisible(False)
             self.rail_group.setExclusive(False)
             self.rail_group.button(i).setChecked(False)
             self.rail_group.setExclusive(True)
             return
+        self.pane.setVisible(True)
         self.stack.setVisible(True)
         self.stack.setCurrentIndex(i)
+        self.pane_hdr.title_label.setText(self.pane_titles[i])
         self.rail_group.button(i).setChecked(True)
         if i == 3:
             self.search.focus(self.view.selected_text())
@@ -177,6 +232,8 @@ class DocTab(QWidget):
             self.view.invalidate(page)
             self.thumbs.refresh_page(page)
         self.comments.set_document(self.doc)
+        for p_ in (self.fields, self.sigs, self.layers):
+            p_.set_document(self.doc)
         self.stateChanged.emit()
 
     def edit(self, page=-1):

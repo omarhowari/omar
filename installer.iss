@@ -1,6 +1,6 @@
 ; Inno Setup script — builds WaraqPDF-Setup.exe from dist\WaraqPDF (run build.bat first)
 #define AppName "Waraq PDF"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 [Setup]
 AppId={{6C3E2B8A-5D2E-4A63-9B54-7E0F0B1A9C21}
 AppName={#AppName}

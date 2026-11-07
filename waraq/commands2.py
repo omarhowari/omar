@@ -52,6 +52,32 @@ class Commands2Mixin:
             m.addAction(self._action(c, l, i))
         return m
 
+    def _ui_menu(self):
+        m = QMenu(self)
+        m.addAction(self._action("dark", A("Dark mode", "الوضع الليلي"), "dark"))
+        m.addAction(self._action("toggle_ribbon", A("Collapse ribbon", "طي الشريط"), "panel"))
+        m.addAction(self._action("doc_tabs", A("Document tabs", "علامات تبويب المستندات"), "tabs"))
+        m.addSeparator()
+        m.addAction(self._action("language", A("Language", "اللغة"), "language"))
+        m.addAction(self._action("settings", A("Settings", "الإعدادات"), "tools"))
+        return m
+
+    def do_toggle_ribbon(self):
+        rib = self.ribbon
+        collapsed = getattr(self, "_ribbon_collapsed", False)
+        if collapsed:
+            rib.setMinimumHeight(0)
+            rib.setMaximumHeight(16777215)
+        else:
+            rib.setFixedHeight(rib.tabBar().sizeHint().height() + 2)
+        self._ribbon_collapsed = not collapsed
+
+    def do_fullscreen_btn(self):
+        self.actions["fullscreen"].trigger()
+
+    def do_ui_options(self):
+        pass
+
     def _show_menu(self):
         m = QMenu(self)
         m.addAction(A("Show all comments", "إظهار كل التعليقات"), lambda: self._set_comments_visible(True))
@@ -668,7 +694,7 @@ class Commands2Mixin:
         t.pdf.checkpoint()
         t.doc.set_toc(toc)
         t.done(-1, msg)
-        if not (t.stack.isVisible() and t.stack.currentIndex() == 1):
+        if not (t.pane.isVisible() and t.stack.currentIndex() == 1):
             t.show_panel(1)
 
     def do_bm_from_text(self):

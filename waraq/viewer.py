@@ -38,12 +38,13 @@ class PageView(QGraphicsView):
     textSelectionChanged = Signal(str)
     contextMenu = Signal(int, object, object)   # page, unrot point, global pos
     filesDropped = Signal(object)
+    pointerMoved = Signal(int, object)          # page (-1 outside), unrot point
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.setBackgroundBrush(QColor("#C9D0DA"))
+        self.setBackgroundBrush(QColor("#9B9B9B"))
         self.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         self.setMouseTracking(True)
@@ -684,6 +685,10 @@ class PageView(QGraphicsView):
         if self._loupe is not None and self._loupe.isVisible():
             self._loupe.hide()
         sp = self.mapToScene(e.position().toPoint())
+        if self.pdf:
+            _pp, _pt = self.scene_to_unrot(sp)
+            self.pointerMoved.emit(-1 if _pp is None else _pp,
+                                   None if _pt is None else _pt * self.doc[_pp].rotation_matrix)
         if self._poly is not None:
             self._update_poly(self._clamp_to_page(self._poly["page"], sp))
         if not self._drag:

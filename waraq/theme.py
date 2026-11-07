@@ -7,7 +7,7 @@ DARK_RIB = dict(rib="#2A2F36", ribbar="#1F2329", tab_sel="#2A2F36", hover="#4A3F
                 file="#B03A2E", title="#1F2329", doctabs="#16191D", doctab="#3A3F47", grp="#9DA7B3", sep="#3D444D")
 LIGHT = dict(bg="#EEF1F5", panel="#F8FAFC", surface="#FFFFFF", border="#D1D5DB", text="#1F2937", muted="#4B5563",
              accent="#1D4ED8", accent_soft="#DBEAFE", hover="#EEF2FF", rail="#F1F5F9", title="#1E293B", danger="#B91C1C",
-             workspace="#C9D0DA")
+             workspace="#9B9B9B")
 DARK = dict(bg="#1B1F24", panel="#22272E", surface="#2B3038", border="#3D444D", text="#E6EDF3", muted="#9DA7B3",
             accent="#4C8DFF", accent_soft="#1F3A66", hover="#2F3A4A", rail="#1F242B", title="#0F1318", danger="#FF7B72",
             workspace="#2B2F36")
@@ -85,6 +85,20 @@ QTabWidget#doctabs::pane {{ border: 0; }}
 QTabWidget#doctabs > QTabBar::tab {{ background: #8A8A8A; color: #FFFFFF; padding: 4px 10px; margin: 3px 1px 0 1px; border: 0;
     border-top-left-radius: 3px; border-top-right-radius: 3px; max-width: 300px; }}
 QTabWidget#doctabs > QTabBar::tab:selected {{ background: {r['doctab']}; color: {c['text']}; font-weight: normal; }}
+QFrame#panehdr {{ background: {r['ribbar']}; border-bottom: 1px solid {r['sep']}; }}
+QLabel#panetitle {{ font-weight: 600; font-size: 12px; }}
+QToolButton#panebtn {{ border: 0; padding: 1px 5px; font-size: 11px; }}
+QToolButton#panebtn::menu-indicator {{ image: none; width: 0; }}
+QToolButton#panetab {{ border: 0; }}
+QFrame#pane {{ background: {c['panel']}; border-right: 1px solid {r['sep']}; }}
+QStatusBar#statusbar {{ background: {r['rib']}; border-top: 1px solid {r['sep']}; min-height: 26px; }}
+QStatusBar#statusbar::item {{ border: 0; }}
+QLabel#grip {{ color: #9A9A9A; font-size: 12px; padding: 0 3px; }}
+QLabel#sbtext {{ color: {c['muted']}; font-size: 12px; padding: 0 6px; }}
+QToolButton#sbbtn {{ border: 1px solid transparent; border-radius: 2px; padding: 1px 3px; font-size: 12px; }}
+QToolButton#sbbtn:hover {{ background: {r['hover']}; border-color: {r['hover_b']}; }}
+QToolButton#sbbtn:checked {{ background: {r['checked']}; border-color: {r['hover_b']}; }}
+QLineEdit#pagebox, QLineEdit#quickstart {{ padding: 1px 4px; border-radius: 2px; }}
 QToolButton#plustab {{ background: transparent; color: white; border: 0; font-size: 18px; padding: 0 8px; }}
 QToolButton#plustab:hover {{ background: #777777; }}
 """

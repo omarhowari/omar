@@ -293,57 +293,106 @@ class MainWindow(Commands2Mixin, QMainWindow):
         m.addAction("Exit", self.close)
 
     def _build_status(self):
+        """Status bar laid out as toolbars: Document options | Page navigation | Page layout | Zoom."""
+        from .icons import cicon
+        from PySide6.QtWidgets import QLineEdit, QSlider
+        A = (lambda en, ar: ar if i18n.LANG == "ar" else en)
         sb = QStatusBar()
+        sb.setObjectName("statusbar")
+        sb.setSizeGripEnabled(True)
         self.setStatusBar(sb)
-        nav = QWidget()
-        h = QHBoxLayout(nav)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
-        for cmd, ic in (("first", "first"), ("prev", "prev")):
-            b = QToolButton()
-            b.setIcon(icon(ic))
-            b.setProperty("ic", ic)
+
+        def grip():
+            g = QLabel("⋮")
+            g.setObjectName("grip")
+            return g
+
+        def btn(cmd, ic, tip, checkable=False):
+            if checkable or cmd in self.actions:
+                b = QToolButton()
+                b.setDefaultAction(self._action(cmd, tip, ic))
+            else:
+                b = QToolButton()
+                b.setIcon(cicon(ic))
+                b.setToolTip(tip)
+                b.clicked.connect(lambda _=False, c=cmd: self.cmd(c))
+            b.setObjectName("sbbtn")
+            b.setIconSize(QSize(16, 16))
             b.setAutoRaise(True)
-            b.clicked.connect(lambda _=False, c=cmd: self.cmd(c))
-            h.addWidget(b)
-        self.page_spin = QSpinBox()
-        self.page_spin.setMinimum(1)
-        self.page_spin.setButtonSymbols(QSpinBox.NoButtons)
-        self.page_spin.setFixedWidth(64)
-        self.page_spin.setAlignment(Qt.AlignCenter)
-        self.page_spin.editingFinished.connect(lambda: self.tab() and self.tab().view.go_to(self.page_spin.value() - 1))
-        h.addWidget(self.page_spin)
-        self.page_total = QLabel("/ 0")
-        h.addWidget(self.page_total)
-        for cmd, ic in (("next", "next"), ("last", "last")):
-            b = QToolButton()
-            b.setIcon(icon(ic))
-            b.setProperty("ic", ic)
-            b.setAutoRaise(True)
-            b.clicked.connect(lambda _=False, c=cmd: self.cmd(c))
-            h.addWidget(b)
-        sb.addPermanentWidget(nav)
+            b.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            return b
+
+        def group(*widgets):
+            w = QWidget()
+            w.setLayoutDirection(Qt.LeftToRight)
+            h = QHBoxLayout(w)
+            h.setContentsMargins(4, 0, 4, 0)
+            h.setSpacing(1)
+            h.addWidget(grip())
+            for x in widgets:
+                h.addWidget(x)
+            return w
+
+        # document options: panes menu, page size, pointer position
+        opts = QToolButton()
+        opts.setObjectName("sbbtn")
+        opts.setText(A("Options", "خيارات"))
+        opts.setPopupMode(QToolButton.InstantPopup)
+        opts.setMenu(self._panes_menu())
         self.size_label = QLabel()
-        self.size_label.setObjectName("muted")
-        sb.addPermanentWidget(self.size_label)
-        zb = QToolButton()
-        zb.setIcon(icon("zoomout"))
-        zb.setAutoRaise(True)
-        zb.clicked.connect(lambda: self.cmd("zoomout"))
-        sb.addPermanentWidget(zb)
+        self.size_label.setObjectName("sbtext")
+        self.pos_label = QLabel()
+        self.pos_label.setObjectName("sbtext")
+        self.pos_label.setMinimumWidth(130)
+        sb.addWidget(group(opts, self.size_label, self.pos_label))
+
+        # page navigation
+        self.page_spin = QSpinBox()      # kept for state bookkeeping (not shown)
+        self.page_spin.hide()
+        self.page_total = QLabel()
+        self.page_total.hide()
+        box = QLineEdit()
+        box.setObjectName("pagebox")
+        box.setFixedWidth(80)
+        box.setAlignment(Qt.AlignCenter)
+        box.returnPressed.connect(lambda: self._goto_from_box(box))
+        self.page_boxes.append(box)
+        nav = group(btn("first", "first", A("First page", "الصفحة الأولى")), btn("prev", "prev", A("Previous page", "الصفحة السابقة")),
+                    box, btn("next", "next", A("Next page", "الصفحة التالية")), btn("last", "last", A("Last page", "الصفحة الأخيرة")),
+                    btn("back", "back", A("Previous view", "العرض السابق")), btn("forward", "forward", A("Next view", "العرض التالي")))
+        sb.addPermanentWidget(nav)
+
+        # page layout
+        lay = group(btn("layout_single", "single", A("Single page", "صفحة واحدة"), True),
+                    btn("layout_continuous", "continuous", A("Continuous", "متواصل"), True),
+                    btn("layout_single2", "facing", A("Two pages", "صفحتان"), True),
+                    btn("layout_two", "facingcont", A("Two pages continuous", "صفحتان متواصلتان"), True))
+        sb.addPermanentWidget(lay)
+
+        # zoom: entry box with presets + out/in + slider
         self.zoom_combo = QComboBox()
         self.zoom_combo.setEditable(True)
-        self.zoom_combo.addItems(["25%", "50%", "75%", "100%", "125%", "150%", "200%", "300%", "400%",
+        self.zoom_combo.addItems(["10%", "25%", "50%", "75%", "100%", "125%", "150%", "200%", "300%", "400%", "800%",
                                   tr("Fit width"), tr("Fit page")])
-        self.zoom_combo.setFixedWidth(100)
+        self.zoom_combo.setFixedWidth(92)
         self.zoom_combo.activated.connect(self._zoom_combo)
         self.zoom_combo.lineEdit().returnPressed.connect(self._zoom_combo)
-        sb.addPermanentWidget(self.zoom_combo)
-        zi = QToolButton()
-        zi.setIcon(icon("zoomin"))
-        zi.setAutoRaise(True)
-        zi.clicked.connect(lambda: self.cmd("zoomin"))
-        sb.addPermanentWidget(zi)
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setObjectName("zoomslider")
+        self.zoom_slider.setRange(10, 800)
+        self.zoom_slider.setFixedWidth(130)
+        self.zoom_slider.setLayoutDirection(Qt.LeftToRight)
+        self.zoom_slider.sliderReleased.connect(lambda: self.tab() and self.tab().view.set_zoom(self.zoom_slider.value() / 100))
+        zoom = group(self.zoom_combo, btn("zoomout", "zoomout", tr("Zoom out")), self.zoom_slider,
+                     btn("zoomin", "zoomin", tr("Zoom in")))
+        sb.addPermanentWidget(zoom)
+
+    def pointer_moved(self, page, pt):
+        if page < 0 or pt is None:
+            self.pos_label.setText("")
+            return
+        mm = 25.4 / 72
+        self.pos_label.setText(f"X: {pt.x * mm:.1f}  Y: {pt.y * mm:.1f} mm")
 
     def _zoom_combo(self, *_):
         self._zoom_from(self.zoom_combo)
@@ -451,7 +500,7 @@ class MainWindow(Commands2Mixin, QMainWindow):
         t.view.set_tool(self.current_tool)
         t.view.night = self.actions["night"].isChecked()
         t.view.show_annots = not self.actions["hide_comments"].isChecked()
-        t.props.setVisible(self.actions["toggle_props"].isChecked())
+        t.props_pane.setVisible(self.actions["toggle_props"].isChecked())
         lay = "single" if self.actions["layout_single"].isChecked() else (
             "two" if self.actions["layout_two"].isChecked() else "continuous")
         t.view.layout_mode = lay
@@ -509,6 +558,10 @@ class MainWindow(Commands2Mixin, QMainWindow):
             for pb in self.page_boxes:
                 if not pb.hasFocus():
                     pb.setText(f"{t.view.current + 1} / {n}")
+            if not self.zoom_slider.isSliderDown():
+                self.zoom_slider.blockSignals(True)
+                self.zoom_slider.setValue(int(t.view.zoom * 100))
+                self.zoom_slider.blockSignals(False)
             for zb in [self.zoom_combo] + self.zoom_boxes:
                 zb.setEditText(f"{t.view.zoom * 100:.2f}%".replace(".00%", "%"))
             if n:
@@ -730,7 +783,7 @@ class MainWindow(Commands2Mixin, QMainWindow):
     def do_add_bookmark(self):
         t = self._need()
         if t:
-            if not (t.stack.isVisible() and t.stack.currentIndex() == 1):
+            if not (t.pane.isVisible() and t.stack.currentIndex() == 1):
                 t.show_panel(1)
             t.books.add()
 
@@ -1094,7 +1147,7 @@ class MainWindow(Commands2Mixin, QMainWindow):
     def do_find(self):
         t = self._need()
         if t:
-            t.show_panel(3) if not (t.stack.isVisible() and t.stack.currentIndex() == 3) else t.search.focus()
+            t.show_panel(3) if not (t.pane.isVisible() and t.stack.currentIndex() == 3) else t.search.focus()
 
     def do_find_next(self):
         t = self._need()
@@ -1165,7 +1218,7 @@ class MainWindow(Commands2Mixin, QMainWindow):
             if b.property("ic"):
                 b.setIcon(icon(b.property("ic")))
         for t in self.doc_tabs():
-            t.view.setBackgroundBrush(QColor_("#2B2F36" if on else "#C9D0DA"))
+            t.view.setBackgroundBrush(QColor_("#2B2F36" if on else "#9B9B9B"))
 
     def do_night(self):
         on = self.actions["night"].isChecked()
@@ -1196,7 +1249,7 @@ class MainWindow(Commands2Mixin, QMainWindow):
         on = self.actions["toggle_props"].isChecked()
         self.settings.setValue("props_pane", on)
         for t in self.doc_tabs():
-            t.props.setVisible(on)
+            t.props_pane.setVisible(on)
 
     # ---- comments
     def do_summarize(self):

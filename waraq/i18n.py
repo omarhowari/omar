@@ -56,7 +56,7 @@ AR = {
     "Import data": "استيراد البيانات", "Comments summary": "ملخص التعليقات", "Export comments": "تصدير التعليقات",
     "Import comments": "استيراد التعليقات", "Copy text": "نسخ النص", "Page labels": "تسميات الصفحات",
     "Compare": "مقارنة", "Start screen": "شاشة البداية", "Hide comments": "إخفاء التعليقات",
-    "Select text": "اختيار النص", "Auto bookmarks": "إشارات تلقائية", "Pages to process": "الصفحات", "Select comments": "التعليقات التوضيحية", "Clipboard": "الحافظة",
+    "Select text": "اختيار النص", "Fields": "الحقول", "Signatures": "التوقيعات", "Layers": "الطبقات", "Signed": "موقّع", "Empty": "فارغ", "No signatures": "لا توجد توقيعات", "This document has no layers": "لا توجد طبقات في هذا المستند", "Options": "خيارات", "Name": "الاسم", "Type": "النوع", "Value": "القيمة", "Auto bookmarks": "إشارات تلقائية", "Pages to process": "الصفحات", "Select comments": "التعليقات التوضيحية", "Clipboard": "الحافظة",
     "Objects": "كائنات", "Add": "إضافة", "Annotations": "ملاحظات", "Typewriter": "آلة كاتبة", "Links": "المراجع",
     "Web links": "روابط الويب", "Create/edit link": "إنشاء/تحرير المرجع", "Sign document": "توقيع المستند",
     "Panes": "الأجزاء", "Previous view": "العرض السابق", "Next view": "العرض التالي", "Comments list": "قائمة التعليقات",
