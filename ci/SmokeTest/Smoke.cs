@@ -91,6 +91,10 @@ internal static class Smoke
         for (int i = 0; i < 4; i++)
             PdfOps.AddTextComment(work, i, 100, 120, "Hello comment " + i, 12, Color.Black, Color.FromArgb(255, 249, 196), "CI");
         Dump(work, "after comments");
+        List<PageGeometry> geoAfter = PdfOps.ReadGeometry(work);
+        for (int i = 0; i < 4; i++)
+            Check(geoAfter[i].Width == 612 && geoAfter[i].Height == 792 && geoAfter[i].Rotation == geo[i].Rotation,
+                  "page " + (i + 1) + " MediaBox and rotation unchanged by adding a comment");
         for (int i = 0; i < 4; i++)
         {
             using (Bitmap bmp = Render(work, i))

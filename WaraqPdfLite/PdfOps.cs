@@ -219,22 +219,24 @@ namespace WaraqPdfLite
         }
 
         // ------------------------------------------------------------------ text comment
-        /// <summary>Maps a point measured on the page as displayed (top-left origin, points) to the unrotated page
-        /// (top-left origin, points).</summary>
-        public static void DisplayToUnrotated(int rotation, double width, double height, double x, double y,
-                                              out double u, out double v)
+        /// <summary>
+        /// Maps a point on the page as displayed (top-left origin, points, /Rotate applied) to PDF user space
+        /// (bottom-left origin) of the unrotated MediaBox. Verified for 0/90/180/270 on Windows with PDFium.
+        /// </summary>
+        public static void DisplayToPdf(int rotation, PdfRectangle mediaBox, double dx, double dy, out double px, out double py)
         {
+            double w = mediaBox.Width;
+            double h = mediaBox.Height;
+            double x, y;
             switch (NormalizeRotation(rotation))
             {
-                case 90:
-                    u = y; v = height - x; break;
-                case 180:
-                    u = width - x; v = height - y; break;
-                case 270:
-                    u = width - y; v = x; break;
-                default:
-                    u = x; v = y; break;
+                case 90: x = dy; y = dx; break;
+                case 180: x = w - dx; y = dy; break;
+                case 270: x = w - dy; y = h - dx; break;
+                default: x = dx; y = h - dy; break;
             }
+            px = mediaBox.X1 + x;
+            py = mediaBox.Y1 + y;
         }
 
         /// <summary>
@@ -250,11 +252,7 @@ namespace WaraqPdfLite
             {
                 PdfPage page = doc.Pages[pageIndex];
                 int rot = NormalizeRotation(page.Rotate);
-                double w = page.MediaBox.Width;
-                double h = page.MediaBox.Height;
-
-                double u, v;
-                DisplayToUnrotated(rot, w, h, x, y, out u, out v);
+                PdfRectangle mediaBox = page.MediaBox;
 
                 XFont font = new XFont("Arial", fontSize, XFontStyle.Regular, new XPdfFontOptions(PdfFontEncoding.Unicode));
                 const double pad = 5.0;
@@ -262,13 +260,15 @@ namespace WaraqPdfLite
                 double boxW;
                 double boxH;
 
-                // Draw in the unrotated coordinate system; temporarily neutralise rotation so PDFsharp does not
-                // apply its own landscape transform, then rotate our drawing so it reads upright on screen.
-                PageOrientation orientation = page.Orientation;
-                page.Rotate = 0;
-                page.Orientation = PageOrientation.Portrait;
+                double px, py;
+                DisplayToPdf(rot, mediaBox, x, y, out px, out py);
+
                 using (XGraphics gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append))
                 {
+                    // PDFsharp's drawing space: gx = pdf x, gy = pageHeight - pdf y (pageHeight as PDFsharp reports it).
+                    double gx = px;
+                    double gy = gfx.PageSize.Height - py;
+
                     string[] lines = text.Replace("\r\n", "\n").Split('\n');
                     double lineHeight = gfx.MeasureString("Xg", font).Height;
                     double widest = 0;
@@ -282,28 +282,27 @@ namespace WaraqPdfLite
                     boxW = widest + pad * 2 + 2;
                     boxH = visualLines * lineHeight + pad * 2;
 
-                    gfx.RotateAtTransform(-rot, new XPoint(u, v));
-                    XRect box = new XRect(u, v, boxW, boxH);
+                    // Turn the drawing so the box reads upright on screen whatever the page rotation is.
+                    gfx.RotateAtTransform(-rot, new XPoint(gx, gy));
+                    XRect box = new XRect(gx, gy, boxW, boxH);
                     XColor fill = XColor.FromArgb(fillColor.A, fillColor.R, fillColor.G, fillColor.B);
                     XColor ink = XColor.FromArgb(textColor.A, textColor.R, textColor.G, textColor.B);
                     gfx.DrawRectangle(new XPen(ink, 0.8), new XSolidBrush(fill), box);
                     XTextFormatter tf = new XTextFormatter(gfx);
                     tf.DrawString(text, font, new XSolidBrush(ink),
-                                  new XRect(u + pad, v + pad, boxW - pad * 2, boxH - pad * 2), XStringFormats.TopLeft);
+                                  new XRect(gx + pad, gy + pad, boxW - pad * 2, boxH - pad * 2), XStringFormats.TopLeft);
                 }
-                page.Rotate = rot;
-                page.Orientation = orientation;
 
-                // Sticky-note comment at the box's top-right corner (as displayed).
-                double cu, cv;
-                DisplayToUnrotated(rot, w, h, x + boxW, y, out cu, out cv);
+                // Sticky-note comment just right of the box's top-right corner (as displayed).
+                double nx, ny;
+                DisplayToPdf(rot, mediaBox, x + boxW + 2, y, out nx, out ny);
                 PdfTextAnnotation note = new PdfTextAnnotation();
                 note.Title = string.IsNullOrEmpty(author) ? Environment.UserName : author;
                 note.Subject = "Comment";
                 note.Contents = text;
                 note.Icon = PdfTextAnnotationIcon.Comment;
                 note.Color = XColor.FromArgb(255, 230, 180, 30);
-                note.Rectangle = new PdfRectangle(new XRect(cu, h - cv - 18, 18, 18));
+                note.Rectangle = new PdfRectangle(new XRect(nx, ny - 18, 18, 18));
                 page.Annotations.Add(note);
 
                 SaveReplace(doc, path);
