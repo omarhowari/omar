@@ -12,3 +12,6 @@ jobs:
         run: find ci/bin -iname pdfium.dll
       - name: Run smoke tests (PDFsharp edits + PDFium rendering)
         run: dotnet run --project ci/SmokeTest/SmokeTest.csproj -c Release
+      - name: Probe PDFsharp drawing on rotated pages
+        if: always()
+        run: dotnet run --project ci/Probe/Probe.csproj -c Release
