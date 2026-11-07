@@ -440,8 +440,8 @@ namespace WaraqPdfLite
                 // Viewing still works; editing commands will report their own errors.
                 ErrorLog.Write("Reading page geometry", ex);
                 geometry = new List<PageGeometry>();
-                for (int i = 0; i < pdf.PageCount; i++)
-                    geometry.Add(new PageGeometry { Width = pdf.PageSizes[i].Width, Height = pdf.PageSizes[i].Height, Rotation = 0 });
+                // Without PDFsharp geometry fall back to PDFium's sizes.
+                geometry = new List<PageGeometry>();
             }
             if (currentPage >= pdf.PageCount) currentPage = pdf.PageCount - 1;
             if (currentPage < 0) currentPage = 0;
@@ -465,10 +465,18 @@ namespace WaraqPdfLite
         }
 
         // =================================================================== rendering
+        /// <summary>Page size as displayed (points), i.e. with the page's /Rotate applied.</summary>
+        private SizeF DisplaySize(int index)
+        {
+            if (index < geometry.Count)
+                return new SizeF((float)geometry[index].DisplayWidth, (float)geometry[index].DisplayHeight);
+            return pdf.PageSizes[index];
+        }
+
         private void RenderCurrentPage(bool scrollToTop)
         {
             if (pdf == null || PageCount == 0) return;
-            SizeF size = pdf.PageSizes[currentPage];   // displayed size in points (rotation applied by PDFium)
+            SizeF size = DisplaySize(currentPage);
             if (fitWidth)
             {
                 int available = viewerPanel.ClientSize.Width - PageMargin * 2 - SystemInformation.VerticalScrollBarWidth;
@@ -548,7 +556,7 @@ namespace WaraqPdfLite
             if (pdf == null || index < 0 || index >= PageCount || index >= thumbImages.Images.Count) return;
             try
             {
-                SizeF size = pdf.PageSizes[index];
+                SizeF size = DisplaySize(index);
                 double s = Math.Min(92.0 / size.Width, 124.0 / size.Height);
                 int w = Math.Max(1, (int)(size.Width * s));
                 int h = Math.Max(1, (int)(size.Height * s));

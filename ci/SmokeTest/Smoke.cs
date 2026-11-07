@@ -18,12 +18,25 @@ internal static class Smoke
 
     private static Bitmap Render(string path, int page)
     {
+        PageGeometry g = PdfOps.ReadGeometry(path)[page];
         using (var stream = new MemoryStream(File.ReadAllBytes(path)))
         using (var doc = PdfiumViewer.PdfDocument.Load(stream))
         {
-            SizeF s = doc.PageSizes[page];
-            return (Bitmap)doc.Render(page, (int)s.Width, (int)s.Height, 72, 72, PdfiumViewer.PdfRenderFlags.Annotations);
+            Console.WriteLine("  pdfium PageSizes[" + page + "] = " + doc.PageSizes[page] + "  display = " + g.DisplayWidth + "x" + g.DisplayHeight);
+            return (Bitmap)doc.Render(page, (int)g.DisplayWidth, (int)g.DisplayHeight, 72, 72, PdfiumViewer.PdfRenderFlags.Annotations);
         }
+    }
+
+    private static bool TextUpright(Bitmap bmp)
+    {
+        // The box text starts near the box's top-left; a dark pixel should exist in the first text line band.
+        for (int y = 124; y < 140; y++)
+            for (int x = 104; x < 160; x++)
+            {
+                Color c = bmp.GetPixel(x, y);
+                if (c.R < 90 && c.G < 90 && c.B < 90) return true;
+            }
+        return false;
     }
 
     private static bool IsBoxColour(Color c)
@@ -67,6 +80,8 @@ internal static class Smoke
                 Color far = bmp.GetPixel(bmp.Width - 5, bmp.Height - 5);
                 Console.WriteLine("  page " + (i + 1) + " rot " + geo[i].Rotation + " size " + bmp.Width + "x" + bmp.Height + " pixel@103,123=" + inside + " far=" + far);
                 Check(IsBoxColour(inside), "comment box drawn at the clicked spot (page rotated " + geo[i].Rotation + ")");
+                Check(bmp.Width == (int)geo[i].DisplayWidth, "rendered with displayed size (page rotated " + geo[i].Rotation + ")");
+                Check(TextUpright(bmp), "comment text starts at box's top-left as displayed (page rotated " + geo[i].Rotation + ")");
                 bmp.Save(Path.Combine(dir, "page" + (i + 1) + ".png"));
             }
         }
