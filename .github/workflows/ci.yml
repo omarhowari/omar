@@ -1,0 +1,14 @@
+name: Waraq PDF Lite CI
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the WinForms app
+        run: dotnet build ci/WaraqPdfLite.Ci.csproj -c Release
+      - name: Check native PDFium copied
+        shell: bash
+        run: find ci/bin -iname pdfium.dll
+      - name: Run smoke tests (PDFsharp edits + PDFium rendering)
+        run: dotnet run --project ci/SmokeTest/SmokeTest.csproj -c Release
