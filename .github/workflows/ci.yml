@@ -1,0 +1,35 @@
+name: Waraq PDF Lite - build installer
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app (Release)
+        run: dotnet build WaraqPdfLite/WaraqPdfLite.csproj -c Release
+      - name: Check output
+        shell: bash
+        run: ls -R WaraqPdfLite/bin/Release/net48 | head -40
+      - name: Smoke tests (PDFsharp edits + PDFium rendering)
+        run: dotnet run --project ci/SmokeTest/SmokeTest.csproj -c Release
+      - name: Start the app and make sure it stays open
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "WaraqPdfLite/bin/Release/net48/WaraqPdfLite.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { Write-Error "App exited early with code $($p.ExitCode)"; exit 1 }
+          Write-Host "APP STARTED OK (window: $($p.MainWindowTitle))"
+          Stop-Process -Id $p.Id -Force
+      - name: Build installer
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="waraq-pdf-lite-v1.0.${{ github.run_number }}"
+          gh release create "$TAG" Output/*.exe --target "${{ github.sha }}" --title "Waraq PDF Lite $TAG" --notes "Windows installer for Waraq PDF Lite (C# / Windows Forms)."
